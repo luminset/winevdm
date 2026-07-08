@@ -170,6 +170,7 @@ typedef struct
     BOOL used;
     SEGPTR segofn16;
     SEGPTR func;
+    OPENFILENAMEA *ofn32;
     union
     {
         OPENFILENAME16 ofn16;
