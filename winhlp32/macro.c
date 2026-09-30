@@ -473,7 +473,11 @@ static void CALLBACK MACRO_ExecFile(LPCSTR pgm, LPCSTR args, LONG cmd_show, LPCS
                debugstr_a(pgm), debugstr_a(args), cmd_show, debugstr_a(topic));
 
     strcpy(buffer, "The help file is asking to run the program below.  Say no if you don't recognize it.\n");
-    strncat(buffer, pgm, 256 - strlen(buffer));
+    if (pgm)
+    {
+        strncat(buffer, pgm, sizeof(buffer) - strlen(buffer) - 1);
+        buffer[sizeof(buffer) - 1] = '\0';
+    }
     int but = MessageBoxA(hwnd, buffer, "Notice", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (but == IDYES)
         ret = ShellExecuteA(hwnd, "open", pgm, args, ".", cmd_show);
@@ -490,7 +494,11 @@ static void CALLBACK MACRO_ExecProgram(LPCSTR str, LONG u)
     char buffer[256];
     WINE_TRACE("(%s, %u)\n", debugstr_a(str), u);
     strcpy(buffer, "The help file is asking to run the program below.  Say no if you don't recognize it.\n");
-    strncat(buffer, str, 256 - strlen(buffer));
+    if (str)
+    {
+        strncat(buffer, str, sizeof(buffer) - strlen(buffer) - 1);
+        buffer[sizeof(buffer) - 1] = '\0';
+    }
     int ret = MessageBoxA(hwnd, buffer, "Notice", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (ret == IDYES)
     {
@@ -914,13 +922,20 @@ void CALLBACK MACRO_SetContents(LPCSTR str, LONG u)
 static void CALLBACK MACRO_SetHelpOnFile(LPCSTR str)
 {
     HLPFILE_PAGE*       page = MACRO_CurrentWindow()->page;
+    char*               new_str;
 
     WINE_TRACE("(%s)\n", debugstr_a(str));
 
-    HeapFree(GetProcessHeap(), 0, page->file->help_on_file);
-    page->file->help_on_file = HeapAlloc(GetProcessHeap(), 0, strlen(str) + 1);
-    if (page->file->help_on_file)
-        strcpy(page->file->help_on_file, str);
+    if (!page || !page->file || !str)
+        return;
+
+    new_str = HeapAlloc(GetProcessHeap(), 0, strlen(str) + 1);
+    if (new_str)
+    {
+        strcpy(new_str, str);
+        HeapFree(GetProcessHeap(), 0, page->file->help_on_file);
+        page->file->help_on_file = new_str;
+    }
 }
 
 static void CALLBACK MACRO_SetPopupColor(LONG rgb)
