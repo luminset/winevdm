@@ -9,19 +9,26 @@ else()
     add_definitions(-DUSE_COMPILER_EXCEPTIONS -Dinline=__inline)
 endif()
 
-# MinGW/GCC: -O2/-O3 miscompile krnl386/resource.c into a `jmp <self>` (EB FE) trap that
-# sits on the GUI startup path (LoadIcon16 -> LoadImage16 -> FindResource16), so every
-# 16-bit program spins at 100% CPU and never opens a window. Only Release-like build types
-# are affected: a configuration without CMAKE_BUILD_TYPE adds no -O flag at all.
-# Force -O1 unless the user already picked an optimization level explicitly.
-if (MINGW AND CMAKE_C_COMPILER_ID STREQUAL "GNU"
-    AND CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$"
-    AND CMAKE_C_FLAGS_RELEASE MATCHES "-O[23]")
-    message(STATUS "winevdm: forcing -O1 for MinGW (GCC -O2/-O3 miscompiles krnl386/resource.c)")
-    string(REGEX REPLACE "-O[23]" "-O1" CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}")
-    string(REGEX REPLACE "-O[23]" "-O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-    set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}"   CACHE STRING "" FORCE)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}" CACHE STRING "" FORCE)
+# MinGW/GCC: -O2/-O3/-Os miscompile several translation units - krnl386/resource.c is the
+# one sitting on the mandatory GUI startup path (LoadIcon16 -> LoadImage16 -> FindResource16)
+# - into a `jmp <self>` (EB FE) trap, so every 16-bit program spins at 100% CPU and never
+# opens a window. A configuration without CMAKE_BUILD_TYPE adds no -O flag at all and is
+# therefore unaffected.
+#
+# The guard rewrites the flags of the *active* configuration. Hard-coding
+# CMAKE_*_FLAGS_RELEASE would leave RelWithDebInfo (-O2) and MinSizeRel (-Os) broken while
+# still printing that -O1 was forced. An explicit -O2/-O3/-Os is downgraded as well -
+# correctness wins over the requested optimization level - but any other level, including
+# an explicit -O1, is left untouched.
+if (MINGW AND CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" WINEWDM_CFG)
+    foreach (WINEWDM_LANG C CXX)
+        if (CMAKE_${WINEWDM_LANG}_FLAGS_${WINEWDM_CFG} MATCHES "-O[23s]")
+            string(REGEX REPLACE "-O[23s]" "-O1" WINEWDM_FLAGS "${CMAKE_${WINEWDM_LANG}_FLAGS_${WINEWDM_CFG}}")
+            set(CMAKE_${WINEWDM_LANG}_FLAGS_${WINEWDM_CFG} "${WINEWDM_FLAGS}" CACHE STRING "" FORCE)
+            message(STATUS "winevdm: forcing -O1 for MinGW ${CMAKE_BUILD_TYPE} (GCC -O2/-O3/-Os miscompile krnl386/resource.c into a `jmp <self>` trap)")
+        endif()
+    endforeach()
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
