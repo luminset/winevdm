@@ -1,3 +1,10 @@
+> **本仓库是一个 fork**，除上游内容外还包含我们自己的补丁分支与改动说明。
+> **我们的改动说明（中文）：[FORK-NOTES.zh-CN.md](FORK-NOTES.zh-CN.md)** —— 12 个合流补丁、MinGW `-O1` 构建约束、预编译包与验证范围。
+> 预编译包见本仓库的 **Releases** 页（`patched-o1-20261014`）。
+> *This is a fork. What we changed is documented in [FORK-NOTES.zh-CN.md](FORK-NOTES.zh-CN.md) (Chinese). Prebuilt package: see this repository's Releases.*
+
+---
+
 # winevdm on 64-bit Windows
 
 ![screenshot](screenshot.PNG)
