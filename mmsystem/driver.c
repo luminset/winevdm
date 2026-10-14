@@ -276,7 +276,16 @@ HDRVR16 WINAPI DrvOpen16(LPCSTR lpDriverName, LPCSTR lpSectionName, LPARAM lPara
     if (!lpDriverName || !*lpDriverName) return 0;
 
     char sysini[MAX_PATH];
-    LPCSTR inipath = RedirectSystemDir("c:\\windows\\system.ini", sysini, MAX_PATH);
+    char windir[MAX_PATH];
+    LPCSTR inipath;
+
+    if (GetWindowsDirectoryA(windir, MAX_PATH) && strlen(windir) + strlen("\\system.ini") < MAX_PATH)
+    {
+        strcat(windir, "\\system.ini");
+        inipath = RedirectSystemDir(windir, sysini, MAX_PATH);
+    }
+    else
+        inipath = RedirectSystemDir("c:\\windows\\system.ini", sysini, MAX_PATH);
 
     if (lpSectionName == NULL) {
 	strcpy(drvName, lpDriverName);

@@ -161,9 +161,17 @@ HIC16 VFWAPI ICOpen16(DWORD fccType, DWORD fccHandler, UINT16 wMode)
     HIC16 ret = HIC_16(ICOpen(fccType, fccHandler, wMode));
     if (!ret)
     {
-        char key[10], sysini[MAX_PATH], drvfile[MAX_PATH];
+        char key[10], sysini[MAX_PATH], drvfile[MAX_PATH], windir[MAX_PATH];
+        LPCSTR inipath;
         sprintf(key, "%4.4s.%4.4s", (char *)&fccType, (char *)&fccHandler);
-        DWORD size = GetPrivateProfileStringA("drivers", key, NULL, drvfile, MAX_PATH, RedirectSystemDir("c:\\windows\\system.ini", sysini, MAX_PATH));
+        if (GetWindowsDirectoryA(windir, MAX_PATH) && strlen(windir) + strlen("\\system.ini") < MAX_PATH)
+        {
+            strcat(windir, "\\system.ini");
+            inipath = RedirectSystemDir(windir, sysini, MAX_PATH);
+        }
+        else
+            inipath = RedirectSystemDir("c:\\windows\\system.ini", sysini, MAX_PATH);
+        DWORD size = GetPrivateProfileStringA("drivers", key, NULL, drvfile, MAX_PATH, inipath);
         if (size)
         {
             if (ICInstall16(fccType, fccHandler, drvfile, NULL, ICINSTALL_DRIVER))
