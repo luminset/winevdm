@@ -9,6 +9,21 @@ else()
     add_definitions(-DUSE_COMPILER_EXCEPTIONS -Dinline=__inline)
 endif()
 
+# MinGW/GCC: -O2/-O3 miscompile krnl386/resource.c into a `jmp <self>` (EB FE) trap that
+# sits on the GUI startup path (LoadIcon16 -> LoadImage16 -> FindResource16), so every
+# 16-bit program spins at 100% CPU and never opens a window. Only Release-like build types
+# are affected: a configuration without CMAKE_BUILD_TYPE adds no -O flag at all.
+# Force -O1 unless the user already picked an optimization level explicitly.
+if (MINGW AND CMAKE_C_COMPILER_ID STREQUAL "GNU"
+    AND CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$"
+    AND CMAKE_C_FLAGS_RELEASE MATCHES "-O[23]")
+    message(STATUS "winevdm: forcing -O1 for MinGW (GCC -O2/-O3 miscompiles krnl386/resource.c)")
+    string(REGEX REPLACE "-O[23]" "-O1" CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}")
+    string(REGEX REPLACE "-O[23]" "-O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}"   CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}" CACHE STRING "" FORCE)
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
