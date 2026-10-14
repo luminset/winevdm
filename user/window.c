@@ -353,6 +353,12 @@ static TIMERPROC allocate_timer_thunk(LPVOID param, LPVOID func, BOOL re)
 
 VOID CALLBACK TimerProc_Thunk(TIMERTHUNK *data, HWND hWnd, UINT msg, UINT_PTR wp, DWORD lp)
 {
+    if (msg == WM_TIMER && HIWORD(wp) == HIWORD(SYSTEM_TIMER_FLAG))
+    {
+        /* system timer created by SetSystemTimer16: report it the way Win16 does */
+        CallWindowProc16(data->param, HWND_16(hWnd), WM_SYSTIMER, LOWORD(wp), lp);
+        return;
+    }
     CallWindowProc16(data->param, HWND_16(hWnd), msg, wp, lp);
     return;
 }
