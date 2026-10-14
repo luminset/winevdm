@@ -52,6 +52,7 @@
 
 - MinGW-W64 i686 在 `-O2`/`-O3` 下会**误编译** `krnl386/resource.c`：GCC 判定某条路径不可达，生成 `jmp <self>`（机器码 `EB FE`）自跳转陷阱，而它正好落在每个 GUI 程序启动必经的 `LoadIcon16 → LoadImage16 → FindResource16` 上 —— 结果是**任何** 16 位程序一启动就 100% CPU 死转、不出窗口。
 - 自跳转计数实测：`-O0`=0、`-O1`=0、`-O2`=2、`-O3`=3；整个工程在 `-O3` 下有 16 个 TU 含自跳转。
+- **`-Os`（MinSizeRel）与 `-O2` 同类不安全**，误编译**也不限于 `resource.c`**：工具链端实测 MinSizeRel 产物与 `-O2` 的自跳转数量完全一致（krnl386.exe16 5 处、user.exe16 6 处；同口径下 `-O1` 为 0），命中点还包括 krnl386 的 `_AddAtom16@4`、`_FindAtom16@4` 与 user 的 `_BuildCommDCB16@8`、`_OpenComm16@12` 等。`resource.c` 只是启动必经路径上最显眼的那个，所以**别只给这一个文件打补丁，要按整个工程降级优化**。
 - **这不是源码 bug，是编译器 bug**；上游 CI 里的 GCC 任务没有传 `-DCMAKE_BUILD_TYPE`（CMake 因此不加任何 `-O`，实际是 `-O0`），MSVC 任务更看不见 —— 所以上游一直没踩到，只有显式做 `Release` 构建的人才会中招。
 - 同类误编译还让构建期的 `widl.exe` 在 `-O2/-O3` 下挂死（表现为"编译卡在 94%"）。
 - 正确的旗标写法（**注意**：`CMAKE_C_FLAGS` 会被 Release 默认的 `-O3` 覆盖，光写它没用）：
@@ -68,7 +69,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 # 期望： C_FLAGS = -w -O1 -DNDEBUG
 ```
 
-- 本 fork 另有一条**未合并**的主题分支 `mingw-o1-guard`：在根 `CMakeLists.txt` 加了守卫，MinGW + GCC + `Release`/`RelWithDebInfo`/`MinSizeRel` 且旗标含 `-O2`/`-O3` 时自动降为 `-O1` 并打印一行原因（已显式指定优化级别时不动）。该分支**不并入 `otvdm-patched`**，留给上游 PR。
+- 本 fork 另有一条**未合并**的主题分支 `mingw-o1-guard`：在根 `CMakeLists.txt` 加了守卫 —— 当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时，自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。该分支**不并入 `otvdm-patched`**，留给上游 PR。
 
 ### 2. MinGW 版交付包的两个必要调整
 
