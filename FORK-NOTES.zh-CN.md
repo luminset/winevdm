@@ -88,7 +88,10 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 
 - Releases 页的 `patched-o1-midip1-20261016`：MinGW-W64 i686 `-O1` Release、平铺布局、带运行时 DLL，解压即用（解压后得到一层 `otvdm-patched-o1-midip1-20261016\` 目录）；157 个条目 = 156 个内容文件 + `SHA256SUMS.txt`，**2,445,266 B**（sha256 `6d2ccc1a…`），**不含 DOS 载荷**（DOS 走扩展包 `ext-dos-20261016`）。
 - 这一版相对上一版**只重编了 `mmsystem.dll16` 一个模块**，改动三处：① **`midiStreamOpen16` 的设备号符号扩展**——16 位侧的 MIDI 映射器设备号是 WORD `0xFFFF`，原代码零扩展成 `0x0000FFFF`，宿主 winmm 判为非法设备号（`MMSYSERR_BADDEVICEID`）→ **任何请求映射器的流式打开都会被拒**；现按 `(INT16)` 符号扩展，与本来正确的 `midiOutOpen16` 一致。② **新增 `otvdm.ini` 的 `[otvdm] midiconfig=`**——逐部署选择宿主 MIDI 输出设备（等价 DOSBox-X 的同名配置），值可以是设备序号或设备名子串，**只重定向「映射器」请求**，值非法时静默回退，不写这一行 = 改版前行为。③ `midiStreamOut16` 的 `MHDR_PREPARED` 加固。156 个内容文件里 **153 个与上一版逐字节相同**。
-- **源码状态照实说**：改动 ③ 与 `midiStreamOut16` 的修复已在 `otvdm-patched` 分支里；**改动 ①② 的源码还没有合并进仓库**（提交 `45b425d8` 里没有，`git log -S midiconfig` 为空），所以这一版的 `mmsystem.dll16` 领先于 tag 所指的提交，暂时无法从仓库复现。合流后会随下一版一起变成可复现。
+- **源码状态照实说**：改动 ①②③ 的源码**现在都已在 `otvdm-patched` 分支里**（①② 见提交 `eb221be7`，③ 见 `32bf26b1`；`git log -S midiconfig` 现在有命中）。发布当时它们还只存在于工作区，所以这一版的 `mmsystem.dll16` 领先于 tag 所指的提交。
+- **可复现性照实说（2026-10-16 补测，此前写的"合流后会变成可复现"不成立）**：这一版的 `mmsystem.dll16` **实测无法逐字节复现**——用 `32bf26b1` 干净重建差 **1674 字节**（换仓库路径重建、构建目录放源码树内/外，结果都一样），用 `eb221be7` 重建差 1677 字节。差异**几乎全部来自构建脚本里 `-ffile-prefix-map` 的目的串**：当时写成 `.`，现在写成空串，内嵌路径串因此是 `.\mmsystem\…` 与 `\mmsystem\…` 两种形式；把目的串改回 `.` 重建后，差异降到 **14 字节**（其中 11 字节是 PE 记账：时间戳两处拷贝 + 由它决定的校验和，另 3 个单字节落在 `.text` 内，未归属）。
+- **但功能上确属这一版**：P1 引入的字面量指纹（`midiconfig` 等）与干净重建**完全一致**，P2 专有的标记为 0，导入 DLL 表与未打补丁版**逐项一致**（8 个）。所以差别是**构建参数**而非源码，这一版可以放心用，只是**字节无法自证**。
+- **下一版会把可复现性做实**：发布流程改为"打包后必须用同提交、不同路径的干净重建与包内 DLL 逐字节核对"，并把构建脚本纳入版本管理——它此前只存在于构建机上，所以这一版的构建输入已无法从仓库重建。
 - **注意**：MinGW 版**每个 16 位程序会出现两个 `otvdm.exe` 进程**，这是正常的（靠 `--fix-compat-mode` 子进程真正运行应用）。**判断是否死转要看 CPU 时间，不要看进程数。**
 - 包已**去掉 COFF 符号表与内嵌的构建机路径**（链接 `-Wl,-s`，编译 `-ffile-prefix-map` + `-g0`）：带符号表与路径的早期版本是 5,921,317 B；官方 v0.9.0 为 1.46 MB。
 
@@ -97,7 +100,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 - ✅ **16 个公版 Windows 3.11 中文附件**：15 个正常出窗口（9 秒墙钟内 CPU 均 < 1.3 秒）；与"未打补丁的同 `-O1` 构建"和"官方 v0.9.0（MSVC）"逐项 A/B 对比，**无回归**。`REGEDIT.EXE` 三个版本都不出窗口，属既有问题。
 - ✅ **MCI waveaudio 驱动链路**：`MPLAYER.EXE CHIMES.WAV` 能通过重定向后的 `WINDOWS\SYSTEM.INI` 打开 16 位驱动；声音控制面板能枚举目录里的 WAV 文件。
 - ✅ **MIDI 流输出修复（`midiStreamOut16`）**：编译通过，16 程序 A/B 回归矩阵与基线 IDENTICAL；**无端到端验证**（包内没有调用 `midiStream*` 的 Win16 程序），详见上面 §三.3。
-- ⚠️ **第二轮 MIDI 改动（`midiStreamOpen16` 符号扩展 + `[otvdm] midiconfig=`）**：源码级分析 + **宿主侧调用实测**（32 位程序直接调 winmm：`midiStreamOpen(0xFFFFFFFF)` 成功、`(0x0000FFFF)` 返回 `MMSYSERR_BADDEVICEID`(2)）+ 16 程序 A/B 回归矩阵三轮（默认 / `midiconfig=0` / `midiconfig=99`）与基线逐行一致；**没有正向听测** —— 构建机只有一块宿主 MIDI 设备、也没有会调 `midiStreamOpen` 的 Win16 程序，所以「换设备是否真的换音色」要在装了第三方 MIDI 驱动的目标机上确认。**这两处源码尚未合流**（详见 §三.4）。
+- ⚠️ **第二轮 MIDI 改动（`midiStreamOpen16` 符号扩展 + `[otvdm] midiconfig=`）**：源码级分析 + **宿主侧调用实测**（32 位程序直接调 winmm：`midiStreamOpen(0xFFFFFFFF)` 成功、`(0x0000FFFF)` 返回 `MMSYSERR_BADDEVICEID`(2)）+ 16 程序 A/B 回归矩阵三轮（默认 / `midiconfig=0` / `midiconfig=99`）与基线逐行一致；**没有正向听测** —— 构建机只有一块宿主 MIDI 设备、也没有会调 `midiStreamOpen` 的 Win16 程序，所以「换设备是否真的换音色」要在装了第三方 MIDI 驱动的目标机上确认。**这两处源码现已合流到 `otvdm-patched`（提交 `eb221be7`），但已发布那一版的字节无法复现**（详见 §三.4 的"可复现性照实说"）。
 - ✅ **时钟动画（定时器路径）**：三个版本都在动（连续截图像素哈希互不相同）。
 - ⚠️ **有 6 个提交只做了源码审查 + 编译 + 无回归验证，没有正向功能验证**：`cd17af3`（需 Morphman 一类复用 `MMCKINFO` 缓冲的程序）、`d8a0b84`（需 Borland 编译的程序）、`a6ce5a3`/`5a6a99f`（需带 `OFN_ENABLEHOOK` 的 16 位应用）、`c3861a8`（需 OLE 客户端）、`043df7c`（需故意传坏指针的程序）、`61bc422`（需直接调 `mmioSendMessage` 的程序）。**在此之前请勿对外宣称这些已修复。**
 - ⚠️ MPlayer 按空格播放不出声，在**三个版本上都复现**（含官方 v0.9.0）→ 上游/环境限制，不是本分支造成的。
