@@ -17,7 +17,10 @@
 - **① 那个时代的"MIDI 播放器"都是程序，不是驱动**。GitHub 上能查到的 DOS 侧播放器包括 DOSMID（★35）、SOSPLAY（★10）、mindi（★7）、MPUmid（★4）、dmx-midi-player、dos-midi-player-for-speaker 等 —— 它们是**独立程序**，装进 otvdm 也救不了 MPLAYER：MPLAYER 缺的不是"某个播放器"，而是"**能被 MCI 调用的 sequencer 驱动**"。
 - **② 现成的 Win16 MCI sequencer 实现不存在**：GitHub 搜索 `midi sequencer win16` = **0 个仓库**，`mciseq` 仅 1 个无关命中。而且即便找到某个 16 位 `.DRV`，按 otvdm 的架构它**也无法自己出声**（16 位侧没有通往现代 Windows 音频的通道，发声必须由宿主侧完成）—— 所以"装个现成的 16 位驱动"这条路在架构上就不成立。
 - **③ 于是"复用"落在唯一可行的形态**：逐字节内嵌 Wine 的 `dlls/mciseq/mcimidi.c`（LGPL-2.1+，保留原始版权头，作为 `mmsystem/mcimidi_wine.inc`），自己只写胶水把 MCI 分派接过去。本次"自研"的全部内容就是 **352 行胶水 + 1622 行上游代码**（外加两处缺陷修复）。
-- **调研通道受限（如实记录，2026-10-16）**：本机网络访问不到日本下载站（`vector.co.jp`、`forest.impress.co.jp`）以及 `web.archive.org` / Wikipedia / SourceForge —— 它们在本机被解析到**非公网地址**（harness 的 `web_fetch` 明确报 `URL hostname resolves to a non-public IP address`），直连超时或被拒；搜索通道同样不可用（harness `web_search` 未配置密钥、本地 AutoGLM token 桥 `127.0.0.1:53699` 无监听、DuckDuckGo 超时、Bing 返回与查询词无关的结果）。**因此"日本下载站"这一侧只有上面的架构层推断（②），没有逐站点清单**；能实测核实的部分（开源实现）已用 GitHub API 查证。
+- **④ 日本下载站（Vector）逐条核实过**：`Windows3.1 → 画像＆サウンド → 音楽関係` 下 **MIDI関係 28 本**（子分类：MIDIプレイヤ、**MIMPI関係 2 本**、RCPプレイヤ 7 本、ゲームミュージック、ファイル変換），其中标注 **Windows 3.1 的 MIDI 播放器 14 本**、**MS-DOS 的 MIDI 播放器 16 本**。代表条目：**CD/MIDI PLAYER**（Win3.1 免费软件，作者 綾部光男，可连播 CD 与 MIDI、显示 MIMPI 的 WRD 歌词）、**Lemon 2.51a**（MID/RCP/R36/G18/G36 播放器）、**美人 16bit版**（WAV/MID/**RMI** 批量登记与 BGM 连播）、**SELSONG/WIN**（"把 MIMPI 或 **MEDIA PLAYER** 连起来演奏"的选曲器）、Sequence Studio Lite（音序器）、GSR/Win（MIDI 监视器）。**结论没变**：这些全是**应用程序**，都要靠系统里已有的 MIDI 驱动（Windows 3.1 日文圈走的是 **MIMPI** 或声卡自带驱动）才发得出声 —— 和 MPLAYER 是同一套架构；`SELSONG/WIN` 这种"给 MEDIA PLAYER 选曲"的软件恰好说明当年 MPLAYER 就是那个播放器。
+- **⑤ 真正自称"驱动"的只有两个，都帮不上忙**：**RS232C MIDI ドライバ 1.50**（"Microsoft Windows 3.1 RS232C-MIDI driver"，免费，6K）驱动的是**外接串口 MIDI 硬件**；**MIDI PatchBay Driver 1.1**（"多个软件同时使用 Windows 的 MIDI 设备"）是在**已有 MIDI 设备之上**做复用。两者都不提供"在现代 Windows 上出声"的通路。
+- **⑥ "可复用的 SMF 代码"只到解析层**：搜到的现成件（`midifile`（C 的 SMF 解析库）、`MStefan99/Midi-Parser`、以及若干日文教程与示例）都只做**文件解析**；而 Wine 的 `mcimidi.c` 是**完整的 MCI 播放器**（解析 + 拍子/速度调度 + `midiOutShortMsg` 输出 + MCI 命令语义），且同样 LGPL 兼容 —— 所以复用它是正确取舍。
+- **过程记录**：以上日本站与检索结果是通过**局域网代理**访问得到的（本机直连时这些域名被解析到非公网地址、无法访问）；代理地址属于本机环境信息，只记录在团队记忆里，不写进仓库。
 
 ## 二、改了什么：12 个提交（按主题分组）
 
