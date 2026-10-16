@@ -194,3 +194,15 @@ ModelManifest.xml
 /.vs
 *16.asm
 *.i
+
+# fork addition: DOS support ships as a separate extension package
+# (otvdm-ext-dos-*.zip) that is extracted into a deployment directory, which may
+# sit inside a working copy. Keep its payload and installers out of the tree.
+otvdm-ext-dos/
+msdos/
+dos.cmd
+install-dos.cmd
+install-dos.ps1
+uninstall-dos.cmd
+uninstall-dos.ps1
+install-manifest.json
