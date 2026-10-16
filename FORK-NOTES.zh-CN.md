@@ -6,8 +6,8 @@
 ## 一、这个 fork 是什么
 
 - **上游基线**：`otya128/winevdm` 的 `master` @ `a31d1c2`（2026-09-22）
-- **我们的工作分支**：`otvdm-patched` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处 + `-O1` 构建守卫**
-- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip1-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用；157 个条目 / 2,445,266 B，**不含 DOS 载荷**）
+- **我们的工作分支**：`otvdm-patched` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ `-O1` 构建守卫**
+- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）。**上一版 `patched-o1-midip1-20261016` 保留**——它的可复现性说明见 §三.4。
 - **DOS 支持**：单独的扩展包 **`ext-dos-20261016`**（`otvdm-ext-dos-20261016.zip`，3,057,248 B）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd` 装上，双击 `uninstall-dos.cmd` 连自己一起撤干净。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
 - `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `otvdm-patched` 上
 
@@ -95,12 +95,23 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 - **注意**：MinGW 版**每个 16 位程序会出现两个 `otvdm.exe` 进程**，这是正常的（靠 `--fix-compat-mode` 子进程真正运行应用）。**判断是否死转要看 CPU 时间，不要看进程数。**
 - 包已**去掉 COFF 符号表与内嵌的构建机路径**（链接 `-Wl,-s`，编译 `-ffile-prefix-map` + `-g0`）：带符号表与路径的早期版本是 5,921,317 B；官方 v0.9.0 为 1.46 MB。
 
+### 5. 16 位 MIDI 的兜底发声通路（内置 MCI 序列器，随 `patched-o1-midip2` 发布）
+
+- **为什么需要**：16 位程序通过 MCI 命令接口请求"MIDI 映射器"（设备号 `-1`）时，本树把它截断成 `0xFFFF` 交给宿主 winmm，宿主判为非法设备号；而走 `driverProc` 直调又绕过了 winmm 的返回值翻译，于是 `MPLAYER.EXE` 这类程序会**判定设备不可用并静默无声**。
+- **做法（复用现成实现，没有自研）**：把 Wine 的 MCI 序列器（`dlls/mciseq/mcimidi.c`，**LGPL 2.1+**，版权头完整保留、文件内容逐字节未改）内嵌为 `mmsystem\mcimidi_wine.inc`，接进 16 位 MCI 分派：默认**先走宿主**，宿主打不开才切内置；`[otvdm] midiseq=internal` 可强制。
+- **落到系统默认输出**：内置序列器打开时若宿主存在 MIDI 输出设备，就发 `MCI_SET`/`MCI_SEQ_SET_PORT = 0` 指向**系统默认输出**——不碰第三方驱动、不做 MAPPER 探测。
+- **覆盖的入口**：`MCI_OPEN_TYPE_ID`、类型串 `"sequencer"`、以及**按扩展名推导**（清单：`mid` / `midi` / `rmi`）——`MPLAYER` 走的是最后这条。
+- **零回归**：默认配置下 `.mid`/`.rmi` 仍由宿主（设备号 `0001`）处理，内置路径一行都不执行；导出表逐字一致，导入只新增 2 条。
+- **已知边界**：字符串接口（`mciSendString`）不走这条兜底；兜底只在 `MCI_OPEN` 时刻判断一次；内置序列器**不认 `[otvdm] midiconfig=`**（该键只作用于宿主优先那条路径），也不出现在设备枚举里。
+- **验证范围见下节**；**"是否真的响了"无法由软件证明，留给人耳确认。**
+
 ## 四、验证到什么程度（请不要过度宣称）
 
 - ✅ **16 个公版 Windows 3.11 中文附件**：15 个正常出窗口（9 秒墙钟内 CPU 均 < 1.3 秒）；与"未打补丁的同 `-O1` 构建"和"官方 v0.9.0（MSVC）"逐项 A/B 对比，**无回归**。`REGEDIT.EXE` 三个版本都不出窗口，属既有问题。
 - ✅ **MCI waveaudio 驱动链路**：`MPLAYER.EXE CHIMES.WAV` 能通过重定向后的 `WINDOWS\SYSTEM.INI` 打开 16 位驱动；声音控制面板能枚举目录里的 WAV 文件。
 - ✅ **MIDI 流输出修复（`midiStreamOut16`）**：编译通过，16 程序 A/B 回归矩阵与基线 IDENTICAL；**无端到端验证**（包内没有调用 `midiStream*` 的 Win16 程序），详见上面 §三.3。
 - ⚠️ **第二轮 MIDI 改动（`midiStreamOpen16` 符号扩展 + `[otvdm] midiconfig=`）**：源码级分析 + **宿主侧调用实测**（32 位程序直接调 winmm：`midiStreamOpen(0xFFFFFFFF)` 成功、`(0x0000FFFF)` 返回 `MMSYSERR_BADDEVICEID`(2)）+ 16 程序 A/B 回归矩阵三轮（默认 / `midiconfig=0` / `midiconfig=99`）与基线逐行一致；**没有正向听测** —— 构建机只有一块宿主 MIDI 设备、也没有会调 `midiStreamOpen` 的 Win16 程序，所以「换设备是否真的换音色」要在装了第三方 MIDI 驱动的目标机上确认。**这两处源码现已合流到 `otvdm-patched`（提交 `eb221be7`），但已发布那一版的字节无法复现**（详见 §三.4 的"可复现性照实说"）。
+- ✅ **第三轮：16 位 MIDI 的兜底发声通路（内置 MCI 序列器，见 §三.5）**：宿主侧实测（`midiOutGetNumDevs()` = 1、设备 0 为 `SWSYNTH`、open / 短消息 / close 全部返回 0）；MCI 命令接口双向对照（默认端口返回 `MCIERR_SEQ_PORT_NONEXISTENT`(338)、0 ms 就结束，改指系统默认端口后返回 0、按 2000 ms 播完）；强制内置时逐条检查**每个音是否被设备接受**（0 条告警）；**真实 16 位端到端**：Win3.1 `MPLAYER.EXE` 打开 `.MID` 解析出 1 轨 / 480 ppq / 33861 字节、长度 2:52、播放位置持续推进，`.RMI` 同样读出 172000 ms；默认路径 A/B **零回归**（宿主设备号 `0001`，内置零调用）；生命周期 37 项 + 扩展名 17 项 + 宿主 MIDI 接受性 13 项全部通过；发布用构建可逐字节复现。
 - ✅ **时钟动画（定时器路径）**：三个版本都在动（连续截图像素哈希互不相同）。
 - ⚠️ **有 6 个提交只做了源码审查 + 编译 + 无回归验证，没有正向功能验证**：`cd17af3`（需 Morphman 一类复用 `MMCKINFO` 缓冲的程序）、`d8a0b84`（需 Borland 编译的程序）、`a6ce5a3`/`5a6a99f`（需带 `OFN_ENABLEHOOK` 的 16 位应用）、`c3861a8`（需 OLE 客户端）、`043df7c`（需故意传坏指针的程序）、`61bc422`（需直接调 `mmioSendMessage` 的程序）。**在此之前请勿对外宣称这些已修复。**
 - ⚠️ MPlayer 按空格播放不出声，在**三个版本上都复现**（含官方 v0.9.0）→ 上游/环境限制，不是本分支造成的。
