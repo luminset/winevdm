@@ -11,6 +11,14 @@
 - **DOS 支持**：单独的扩展包 **`ext-dos-20261016`**（`otvdm-ext-dos-20261016.zip`，3,057,248 B）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd` 装上，双击 `uninstall-dos.cmd` 连自己一起撤干净。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
 - `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `otvdm-patched` 上
 
+### 现成方案调研（"能用现成的就不自研"）
+
+- **结论：没有可用的现成替代品；复用 Wine 的 `mcimidi.c` 是唯一合理路径。** 分三层：
+- **① 那个时代的"MIDI 播放器"都是程序，不是驱动**。GitHub 上能查到的 DOS 侧播放器包括 DOSMID（★35）、SOSPLAY（★10）、mindi（★7）、MPUmid（★4）、dmx-midi-player、dos-midi-player-for-speaker 等 —— 它们是**独立程序**，装进 otvdm 也救不了 MPLAYER：MPLAYER 缺的不是"某个播放器"，而是"**能被 MCI 调用的 sequencer 驱动**"。
+- **② 现成的 Win16 MCI sequencer 实现不存在**：GitHub 搜索 `midi sequencer win16` = **0 个仓库**，`mciseq` 仅 1 个无关命中。而且即便找到某个 16 位 `.DRV`，按 otvdm 的架构它**也无法自己出声**（16 位侧没有通往现代 Windows 音频的通道，发声必须由宿主侧完成）—— 所以"装个现成的 16 位驱动"这条路在架构上就不成立。
+- **③ 于是"复用"落在唯一可行的形态**：逐字节内嵌 Wine 的 `dlls/mciseq/mcimidi.c`（LGPL-2.1+，保留原始版权头，作为 `mmsystem/mcimidi_wine.inc`），自己只写胶水把 MCI 分派接过去。本次"自研"的全部内容就是 **352 行胶水 + 1622 行上游代码**（外加两处缺陷修复）。
+- **调研通道受限（如实记录，2026-10-16）**：本机网络访问不到日本下载站（`vector.co.jp`、`forest.impress.co.jp`）以及 `web.archive.org` / Wikipedia / SourceForge —— 它们在本机被解析到**非公网地址**（harness 的 `web_fetch` 明确报 `URL hostname resolves to a non-public IP address`），直连超时或被拒；搜索通道同样不可用（harness `web_search` 未配置密钥、本地 AutoGLM token 桥 `127.0.0.1:53699` 无监听、DuckDuckGo 超时、Bing 返回与查询词无关的结果）。**因此"日本下载站"这一侧只有上面的架构层推断（②），没有逐站点清单**；能实测核实的部分（开源实现）已用 GitHub API 查证。
+
 ## 二、改了什么：12 个提交（按主题分组）
 
 ### 1. 16 位多媒体 / 驱动（本次重点）

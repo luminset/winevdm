@@ -2,6 +2,8 @@
 > **我们的改动说明（中文）：[FORK-NOTES.zh-CN.md](FORK-NOTES.zh-CN.md)** —— 12 个合流补丁、两轮 MIDI 修复 + 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）、MinGW `-O1` 构建守卫、预编译包与验证范围。
 > 预编译包见本仓库的 **Releases** 页：主包 `patched-o1-midip2-20261016`（解压即用；上一版 `patched-o1-midip1-20261016` 保留）；DOS 支持是独立扩展包，见 `ext-dos-20261016`。
 > *This is a fork. What we changed is documented in [FORK-NOTES.zh-CN.md](FORK-NOTES.zh-CN.md) (Chinese). Prebuilt packages: see this repository's Releases — main package `patched-o1-midip2-20261016` (the previous `patched-o1-midip1-20261016` is kept), plus `ext-dos-20261016` for DOS support.*
+> **第三方代码来源 / Third-party code**：新增的 16 位 MIDI 兜底发声实现复用 **Wine** 的 `dlls/mciseq/mcimidi.c`（**LGPL-2.1-or-later**），以原始版权头**逐字节**内嵌为 `mmsystem/mcimidi_wine.inc`；我们自有的胶水代码见 `mmsystem/mciseq_internal.c` / `.h`。本 fork 整体沿用上游的许可证。
+> *The new 16-bit MIDI fallback reuses **Wine**'s `dlls/mciseq/mcimidi.c` (**LGPL-2.1-or-later**), embedded verbatim as `mmsystem/mcimidi_wine.inc` with its original copyright header; our own glue lives in `mmsystem/mciseq_internal.c` / `.h`. This fork keeps the upstream license.*
 
 ---
 
