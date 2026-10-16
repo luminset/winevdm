@@ -6,8 +6,9 @@
 ## 一、这个 fork 是什么
 
 - **上游基线**：`otya128/winevdm` 的 `master` @ `a31d1c2`（2026-09-22）
-- **我们的工作分支**：`otvdm-patched` = 上游基线 **+ 12 个提交**（合流社区 fork 里的 12 个补丁，并修好其中 3 条自身的缺陷）
-- **预编译包**：本仓库 **Releases** 页的 `patched-o1-slim-20261014`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用；156 个文件 / 2,415,833 B）
+- **我们的工作分支**：`otvdm-patched` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ 一处 MIDI 修复 + `-O1` 构建守卫**
+- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midi-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用；157 个条目 / 2,443,216 B，**不含 DOS 载荷**）
+- **DOS 支持**：单独的扩展包 **`ext-dos-20261016`**（`otvdm-ext-dos-20261016.zip`，3,057,248 B）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd` 装上，双击 `uninstall-dos.cmd` 连自己一起撤干净。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
 - `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `otvdm-patched` 上
 
 ## 二、改了什么：12 个提交（按主题分组）
@@ -69,23 +70,31 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 # 期望： C_FLAGS = -w -O1 -DNDEBUG
 ```
 
-- 本 fork 另有一条**未合并**的主题分支 `mingw-o1-guard`：在根 `CMakeLists.txt` 加了守卫 —— 当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时，自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。该分支**不并入 `otvdm-patched`**，留给上游 PR。
+- 根 `CMakeLists.txt` 里**已经带上了守卫**（原主题分支 `mingw-o1-guard` 的两个提交已并入 `otvdm-patched`）：当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。原先那条独立分支仍留在远端（`mingw-o1-guard`），作为这段改动的历史位置，将来若要单独提交给上游从那里取即可。
 
 ### 2. MinGW 版交付包的两个必要调整
 
 - **必须平铺目录**：`otvdm.exe` 静态导入 `krnl386.exe16`，官方包的 `dll/` 子目录布局只对 MSVC 版有效。
 - **必须随包带 MinGW 运行时**：`libgcc_s_dw2-1.dll`、`libstdc++-6.dll`、`libwinpthread-1.dll`，否则报 "error while loading shared libraries"。
 
-### 3. 预编译包
+### 3. 16 位 MIDI 流输出的一处真实缺陷（我们自己查出来并修好的）
 
-- Releases 页的 `patched-o1-slim-20261014`：MinGW-W64 i686 `-O1` Release、平铺布局、带运行时 DLL，解压即用（解压后得到一层 `otvdm-patched-o1-slim\` 目录）。
+- 症状：16 位程序调 `midiStreamOut`（`MMSYSTEM.254`）时**静默无声、不报错**。
+- 根因：`midiStreamOut16` 把应用给的 16 位 `MIDIHDR16` **直接当 32 位 `MIDIHDR` 交给宿主**。两者布局不同 —— 16 位版里的 `lpData` 仍是 16 位指针，尾部还少 `dwOffset`/`dwReserved` —— 宿主于是读到一个坏指针。**不是"漏了 `MapSL`"**：`.spec` 里标 `ptr`/`str`/`wstr` 的参数，convspec 生成的 thunk 已经把它换算成 32 位线性地址，只有 `segptr`/`segstr` 才需要实现自己 `MapSL`。
+- 修法沿用本树自己的约定：`MODM_PREPARE` 早就为这个 16 位表头建过 32 位影子、并把地址停在 `reserved` 字段（注释原文就是 "for reuse in unprepare **and write**"）。于是取回影子、按 `MODM_LONGDATA` 的做法刷新 `dwBufferLength`，长度用本树既有的 `offsetof(MIDIHDR, dwOffset)`（=28）；没 prepare 过的头返回 `MIDIERR_UNPREPARED`（先判 `MHDR_PREPARED`，因为 `reserved` 是应用可写字段、未清零时可能是垃圾值）。改动 3 文件 / +30 −2。
+- **验证范围照实说**：源码级核对 + 编译 + 16 程序 A/B 回归矩阵与基线 **IDENTICAL**（无回归），但**没有端到端验证** —— 交付包里没有会调 `midiStream*` 的 Win16 程序。「放 MIDI 没声音」这个原始观感已定案为 **MPLAYER 自动播放没触发**（手动点播放有声），与这处缺陷无关。
+
+### 4. 预编译包
+
+- Releases 页的 `patched-o1-midi-20261016`：MinGW-W64 i686 `-O1` Release、平铺布局、带运行时 DLL，解压即用（解压后得到一层 `otvdm-patched-o1-midi-20261016-nodos\` 目录）；157 个条目 = 156 个内容文件 + `SHA256SUMS.txt`，**2,443,216 B**，**不含 DOS 载荷**（DOS 走扩展包 `ext-dos-20261016`）。
 - **注意**：MinGW 版**每个 16 位程序会出现两个 `otvdm.exe` 进程**，这是正常的（靠 `--fix-compat-mode` 子进程真正运行应用）。**判断是否死转要看 CPU 时间，不要看进程数。**
-- 当前包已**去掉 COFF 符号表与内嵌的构建机路径**（链接 `-Wl,-s`，编译 `-ffile-prefix-map` + `-g0`）：2,415,833 B（上一版带符号表与路径的是 5,921,317 B，**−59 %**），二进制里不再有构建目录或工具链的绝对路径。官方 v0.9.0 为 1.46 MB。
+- 当前包已**去掉 COFF 符号表与内嵌的构建机路径**（链接 `-Wl,-s`，编译 `-ffile-prefix-map` + `-g0`）：带符号表与路径的早期版本是 5,921,317 B；这一版的 156 个内容文件与上一版**逐个字节相同**（只有包内那份中文说明按「DOS 改走扩展包」重写过）。官方 v0.9.0 为 1.46 MB。
 
 ## 四、验证到什么程度（请不要过度宣称）
 
 - ✅ **16 个公版 Windows 3.11 中文附件**：15 个正常出窗口（9 秒墙钟内 CPU 均 < 1.3 秒）；与"未打补丁的同 `-O1` 构建"和"官方 v0.9.0（MSVC）"逐项 A/B 对比，**无回归**。`REGEDIT.EXE` 三个版本都不出窗口，属既有问题。
 - ✅ **MCI waveaudio 驱动链路**：`MPLAYER.EXE CHIMES.WAV` 能通过重定向后的 `WINDOWS\SYSTEM.INI` 打开 16 位驱动；声音控制面板能枚举目录里的 WAV 文件。
+- ✅ **MIDI 流输出修复（`midiStreamOut16`）**：编译通过，16 程序 A/B 回归矩阵与基线 IDENTICAL；**无端到端验证**（包内没有调用 `midiStream*` 的 Win16 程序），详见上面 §三.3。
 - ✅ **时钟动画（定时器路径）**：三个版本都在动（连续截图像素哈希互不相同）。
 - ⚠️ **有 6 个提交只做了源码审查 + 编译 + 无回归验证，没有正向功能验证**：`cd17af3`（需 Morphman 一类复用 `MMCKINFO` 缓冲的程序）、`d8a0b84`（需 Borland 编译的程序）、`a6ce5a3`/`5a6a99f`（需带 `OFN_ENABLEHOOK` 的 16 位应用）、`c3861a8`（需 OLE 客户端）、`043df7c`（需故意传坏指针的程序）、`61bc422`（需直接调 `mmioSendMessage` 的程序）。**在此之前请勿对外宣称这些已修复。**
 - ⚠️ MPlayer 按空格播放不出声，在**三个版本上都复现**（含官方 v0.9.0）→ 上游/环境限制，不是本分支造成的。
@@ -95,7 +104,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 
 - 本分支**未提 PR**，只存在于本 fork；上游只走 PR，绝不直接推 `upstream`。
 - `master` 保持为**上游纯镜像**，可随时同步（GitHub 的 "Sync fork"，或本地 `git fetch upstream && git merge --ff-only upstream/master`）。
-- **本文件与 `README.md` 顶部的提示属于本 fork 自有内容**，不打算同步回上游。将来若向上游提 PR，请从**干净的 12 提交处**另开分支（tag `patched-o1-20261014` / 提交 `4df7863`），不要带上这些说明提交。
+- **本文件与 `README.md` 顶部的提示属于本 fork 自有内容**，不打算同步回上游。**目前不向上游提 PR**，改动先在自己仓库维护。将来若提 PR，请从**干净的 12 提交处**另开分支（tag `patched-o1-20261014` / 提交 `4df7863`），不要带上这些说明提交；`-O1` 守卫那两个提交在 `mingw-o1-guard` 上可单独取。
 
 ## 六、许可
 
