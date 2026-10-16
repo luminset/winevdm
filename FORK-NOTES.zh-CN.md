@@ -106,7 +106,9 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 - **验证范围见下节**。关于"是否真的响了"：**已实测到信号**——用系统默认渲染端点的 WASAPI 电平表（`p2-mciseq\hosttest\audiometer.cs`）测量内置序列器播放 `CANYON.MID`：**峰值 0.735（-2.7 dBFS）**，且与请求的 6 秒严格同步（第 6 秒起归零）；同一次测量带**阴性对照**（什么都不放 = 0.000000）与**阳性对照**（系统 `Windows Ding.wav` = 0.496 / -6.1 dBFS），端点未静音、主音量 32%。⇒ 在这台开发机上确实发声，不再只能靠人耳。
 - **一个继承自 Wine 的小限制**：`CANYON.MID` 的第一条轨是 SMPTE 计时，Wine 的播放器不实现 SMPTE 轨起点（日志 `NIY: SMPTE track start 96:0:0 0.0`），会跳过该轨；音乐照常播放，这不是本版引入的。
 - **★ 16 位整条路也实测发声了**（不再是推断）：真实 Win3.1 16 位程序 `MPLAYER.EXE` 打开 `CANYON.MID`、强制 `midiseq=internal` 后点播放，trace 显示 `MIDI_mciOpen wDevID=61440`（即 `0xF000`，宿主 `0x0001` 出现 **0** 次）、`MIDI_mciPlay`、`dwStatus=526`（播放）**3044** 行且 `525`（停止）**0** 行、`Wait until` 从 0 推进到 **47004 ms**（1260 个脉冲）、`not translated` / `MMSYSERR` / `MCIERR` 全 **0**；**与此同时**电平表连续 **16 秒**测到峰值 **0.646（-3.8 dBFS）**。⇒ "16 位程序播 MIDI 真的响"已经是同时观测到的事实。
-- 触发播放用的是**把鼠标消息定向投给 `#Play` 按钮自己的窗口句柄**（不使用 `SendKeys`：投递到单个 HWND 既不碰键盘也不抢焦点，猜错也只落在 otvdm 自己的窗口里）；MPLAYER 的标题栏状态字不可靠，所以未据此判断是鼠标点击还是随后的 `WM_COMMAND` 回退生效。
+- **★ 更正：根本不需要点击——MPLAYER 在设备可用时自己就会播放。** 同一命令、同一文件、三次运行（`e2e\A-stock` / `B-p2default` / `C-p2internal`），**全程零点击**：旧 DLL ⇒ 标题停在 `(stopped)`、无音乐（电平表只有一个短暂峰值，均值 0.065，来源未确认）；本版 DLL（**默认宿主路径**）⇒ 标题 `(playing)`、电平表持续发声峰值 0.700 / 均值 **0.318**、trace 里 **0** 条内置序列器行（证明默认路径不碰内置代码）；本版 DLL + `midiseq=internal` ⇒ 持续发声峰值 0.785 / 均值 **0.344**、`MIDI_mciOpen wDevID=61440` 1 行、播放推进 0→**43126 ms**（1166 个脉冲）。⇒ 旧版连设备都打不开，所以"不能自动播放"是**故障症状**，不是 MPLAYER 的属性。
+- 因此上一轮那句"播放是由投递鼠标消息触发的"是**多余的**（当时只按"哪次点击生效未判定"记了不确定）。定向投递窗口消息这项技术仍保留（`e2e\winclick.cs` + `mplayer-probe.ps1`）：它比 `SendKeys` 安全——投给单个 HWND，不碰键盘、不抢焦点。
+- **已知外观差异（不影响发声）**：走默认宿主路径时标题显示 `(playing)`；强制 `midiseq=internal` 时标题的状态字为空（`Media Player - CANYON.MID ()`）。两种路径都实测有声音。
 
 ## 四、验证到什么程度（请不要过度宣称）
 
