@@ -6,10 +6,10 @@
 ## 一、这个 fork 是什么
 
 - **上游基线**：`otya128/winevdm` 的 `master` @ `a31d1c2`（2026-09-22）
-- **我们的工作分支**：`patched` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ `-O1` 构建守卫**
+- **我们的工作分支**：`nohafix` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ `-O1` 构建守卫**
 - **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）。**上一版 `patched-o1-midip1-20261016` 保留**——它的可复现性说明见 §三.4。
 - **DOS 支持**：单独的扩展包 **`ext-dos-20261016`**（`otvdm-ext-dos-20261016.zip`，3,057,248 B）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd` 装上，双击 `uninstall-dos.cmd` 连自己一起撤干净。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
-- `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `patched` 上；对上游只用 `upstream-pr` 这一条通道（见 §五）
+- `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `nohafix` 上；对上游只用 `upstream-pr` 这一条通道（见 §五）
 
 ### 现成方案调研（"能用现成的就不自研"）
 
@@ -81,7 +81,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 # 期望： C_FLAGS = -w -O1 -DNDEBUG
 ```
 
-- 根 `CMakeLists.txt` 里**已经带上了守卫**（原主题分支 `mingw-o1-guard` 的两个提交已并入 `patched`）：当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。原先那条独立分支（`mingw-o1-guard`）已删除：内容就在 `patched` 里（提交 `8ea3a5b9`、`9d1073c4`），将来若要单独提给上游，从这里拣这两条即可。
+- 根 `CMakeLists.txt` 里**已经带上了守卫**（原主题分支 `mingw-o1-guard` 的两个提交已并入 `nohafix`）：当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。原先那条独立分支（`mingw-o1-guard`）已删除：内容就在 `nohafix` 里（提交 `8ea3a5b9`、`9d1073c4`），将来若要单独提给上游，从这里拣这两条即可。
 
 ### 2. MinGW 版交付包的两个必要调整
 
@@ -99,7 +99,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 
 - Releases 页的 `patched-o1-midip1-20261016`：MinGW-W64 i686 `-O1` Release、平铺布局、带运行时 DLL，解压即用（解压后得到一层 `otvdm-patched-o1-midip1-20261016\` 目录）；157 个条目 = 156 个内容文件 + `SHA256SUMS.txt`，**2,445,266 B**（sha256 `6d2ccc1a…`），**不含 DOS 载荷**（DOS 走扩展包 `ext-dos-20261016`）。
 - 这一版相对上一版**只重编了 `mmsystem.dll16` 一个模块**，改动三处：① **`midiStreamOpen16` 的设备号符号扩展**——16 位侧的 MIDI 映射器设备号是 WORD `0xFFFF`，原代码零扩展成 `0x0000FFFF`，宿主 winmm 判为非法设备号（`MMSYSERR_BADDEVICEID`）→ **任何请求映射器的流式打开都会被拒**；现按 `(INT16)` 符号扩展，与本来正确的 `midiOutOpen16` 一致。② **新增 `otvdm.ini` 的 `[otvdm] midiconfig=`**——逐部署选择宿主 MIDI 输出设备（等价 DOSBox-X 的同名配置），值可以是设备序号或设备名子串，**只重定向「映射器」请求**，值非法时静默回退，不写这一行 = 改版前行为。③ `midiStreamOut16` 的 `MHDR_PREPARED` 加固。156 个内容文件里 **153 个与上一版逐字节相同**。
-- **源码状态照实说**：改动 ①②③ 的源码**现在都已在 `patched` 分支里**（①② 见提交 `eb221be7`，③ 见 `32bf26b1`；`git log -S midiconfig` 现在有命中）。发布当时它们还只存在于工作区，所以这一版的 `mmsystem.dll16` 领先于 tag 所指的提交。
+- **源码状态照实说**：改动 ①②③ 的源码**现在都已在 `nohafix` 分支里**（①② 见提交 `eb221be7`，③ 见 `32bf26b1`；`git log -S midiconfig` 现在有命中）。发布当时它们还只存在于工作区，所以这一版的 `mmsystem.dll16` 领先于 tag 所指的提交。
 - **可复现性照实说（2026-10-16 补测，此前写的"合流后会变成可复现"不成立）**：这一版的 `mmsystem.dll16` **实测无法逐字节复现**——用 `32bf26b1` 干净重建差 **1674 字节**（换仓库路径重建、构建目录放源码树内/外，结果都一样），用 `eb221be7` 重建差 1677 字节。差异**几乎全部来自构建脚本里 `-ffile-prefix-map` 的目的串**：当时写成 `.`，现在写成空串，内嵌路径串因此是 `.\mmsystem\…` 与 `\mmsystem\…` 两种形式；把目的串改回 `.` 重建后，差异降到 **14 字节**（其中 11 字节是 PE 记账：时间戳两处拷贝 + 由它决定的校验和，另 3 个单字节落在 `.text` 内，未归属）。
 - **但功能上确属这一版**：P1 引入的字面量指纹（`midiconfig` 等）与干净重建**完全一致**，P2 专有的标记为 0，导入 DLL 表与未打补丁版**逐项一致**（8 个）。所以差别是**构建参数**而非源码，这一版可以放心用，只是**字节无法自证**。
 - **下一版会把可复现性做实**：发布流程改为"打包后必须用同提交、不同路径的干净重建与包内 DLL 逐字节核对"，并把构建脚本纳入版本管理——它此前只存在于构建机上，所以这一版的构建输入已无法从仓库重建。
@@ -127,7 +127,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 - ✅ **16 个公版 Windows 3.11 中文附件**：15 个正常出窗口（9 秒墙钟内 CPU 均 < 1.3 秒）；与"未打补丁的同 `-O1` 构建"和"官方 v0.9.0（MSVC）"逐项 A/B 对比，**无回归**。`REGEDIT.EXE` 三个版本都不出窗口，属既有问题。
 - ✅ **MCI waveaudio 驱动链路**：`MPLAYER.EXE CHIMES.WAV` 能通过重定向后的 `WINDOWS\SYSTEM.INI` 打开 16 位驱动；声音控制面板能枚举目录里的 WAV 文件。
 - ✅ **MIDI 流输出修复（`midiStreamOut16`）**：编译通过，16 程序 A/B 回归矩阵与基线 IDENTICAL；**无端到端验证**（包内没有调用 `midiStream*` 的 Win16 程序），详见上面 §三.3。
-- ⚠️ **第二轮 MIDI 改动（`midiStreamOpen16` 符号扩展 + `[otvdm] midiconfig=`）**：源码级分析 + **宿主侧调用实测**（32 位程序直接调 winmm：`midiStreamOpen(0xFFFFFFFF)` 成功、`(0x0000FFFF)` 返回 `MMSYSERR_BADDEVICEID`(2)）+ 16 程序 A/B 回归矩阵三轮（默认 / `midiconfig=0` / `midiconfig=99`）与基线逐行一致；**没有正向听测** —— 构建机只有一块宿主 MIDI 设备、也没有会调 `midiStreamOpen` 的 Win16 程序，所以「换设备是否真的换音色」要在装了第三方 MIDI 驱动的目标机上确认。**这两处源码现已合流到 `patched`（提交 `eb221be7`），但已发布那一版的字节无法复现**（详见 §三.4 的"可复现性照实说"）。
+- ⚠️ **第二轮 MIDI 改动（`midiStreamOpen16` 符号扩展 + `[otvdm] midiconfig=`）**：源码级分析 + **宿主侧调用实测**（32 位程序直接调 winmm：`midiStreamOpen(0xFFFFFFFF)` 成功、`(0x0000FFFF)` 返回 `MMSYSERR_BADDEVICEID`(2)）+ 16 程序 A/B 回归矩阵三轮（默认 / `midiconfig=0` / `midiconfig=99`）与基线逐行一致；**没有正向听测** —— 构建机只有一块宿主 MIDI 设备、也没有会调 `midiStreamOpen` 的 Win16 程序，所以「换设备是否真的换音色」要在装了第三方 MIDI 驱动的目标机上确认。**这两处源码现已合流到 `nohafix`（提交 `eb221be7`），但已发布那一版的字节无法复现**（详见 §三.4 的"可复现性照实说"）。
 - ✅ **第三轮：16 位 MIDI 的兜底发声通路（内置 MCI 序列器，见 §三.5）**：宿主侧实测（`midiOutGetNumDevs()` = 1、设备 0 为 `SWSYNTH`、open / 短消息 / close 全部返回 0）；MCI 命令接口双向对照（默认端口返回 `MCIERR_SEQ_PORT_NONEXISTENT`(338)、0 ms 就结束，改指系统默认端口后返回 0、按 2000 ms 播完）；强制内置时逐条检查**每个音是否被设备接受**（0 条告警）；**真实 16 位端到端**：Win3.1 `MPLAYER.EXE` 打开 `.MID` 解析出 1 轨 / 480 ppq / 33861 字节、长度 2:52、播放位置持续推进，`.RMI` 同样读出 172000 ms；默认路径 A/B **零回归**（宿主设备号 `0001`，内置零调用）；生命周期 37 项 + 扩展名 17 项 + 宿主 MIDI 接受性 13 项全部通过；发布用构建可逐字节复现；**并在系统默认渲染端点的电平表上实测到真实信号（峰值 -2.7 dBFS，含阴性/阳性对照），即"确实发声"这一步已用软件测量，不再只靠人耳；进一步在真实 16 位程序（MPLAYER，走内置序列器 `0xF000`）播放时同时测到连续 16 秒、峰值 -3.8 dBFS 的信号**。
 - ✅ **时钟动画（定时器路径）**：三个版本都在动（连续截图像素哈希互不相同）。
 - ⚠️ **有 6 个提交只做了源码审查 + 编译 + 无回归验证，没有正向功能验证**：`cd17af3`（需 Morphman 一类复用 `MMCKINFO` 缓冲的程序）、`d8a0b84`（需 Borland 编译的程序）、`a6ce5a3`/`5a6a99f`（需带 `OFN_ENABLEHOOK` 的 16 位应用）、`c3861a8`（需 OLE 客户端）、`043df7c`（需故意传坏指针的程序）、`61bc422`（需直接调 `mmioSendMessage` 的程序）。**在此之前请勿对外宣称这些已修复。**
@@ -141,7 +141,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
   | 分支 | 用途 | 会不会推上游 |
   | --- | --- | --- |
   | `master` | 上游 `master` 的**纯镜像**，不带任何 fork 内容 | 是（内容等同上游） |
-  | `patched` | **我们自己的主线**：上游基线 + 全部 fork 补丁，发布包从这里构建 | **不推** |
+  | `nohafix` | **我们自己的主线**：上游基线 + 全部 fork 补丁，发布包从这里构建 | **不推** |
   | `upstream-pr` | **对上游的唯一通道**：每次提 PR 前 `git reset --hard upstream/master` 再拣提交 | 是 |
 
 - 上游只走 PR，绝不直接推 `upstream`；PR 分支**永远从 `upstream/master` 起建**，因此不会带上本文件、`README.md` 的 fork 提示、`-O1` 守卫、发布脚本这类 fork 自有内容。
@@ -151,4 +151,4 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 
 ## 六、许可
 
-GPL-2.0，与上游一致。源码 = 本仓库的 `patched` 分支，或对应 tag 附带的自动源码包。
+GPL-2.0，与上游一致。源码 = 本仓库的 `nohafix` 分支，或对应 tag 附带的自动源码包。
