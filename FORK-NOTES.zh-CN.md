@@ -9,7 +9,7 @@
 - **我们的工作分支**：`nohafix` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ `-O1` 构建守卫**
 - **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）。**上一版 `patched-o1-midip1-20261016` 保留**——它的可复现性说明见 §三.4。
 - **DOS 支持**：单独的扩展包 **`ext-dos-20261016`**（`otvdm-ext-dos-20261016.zip`，3,057,248 B）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd` 装上，双击 `uninstall-dos.cmd` 连自己一起撤干净。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
-- `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `nohafix` 上；对上游只用 `upstream-pr` 这一条通道（见 §五）
+- `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `nohafix` 上；**对上游暂不提交**（2026-10-17：PR #1627 已关闭、通道分支已删除，只在确实必要时重建，见 §五）
 
 ### 现成方案调研（"能用现成的就不自研"）
 
@@ -142,11 +142,11 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
   | --- | --- | --- |
   | `master` | 上游 `master` 的**纯镜像**，不带任何 fork 内容 | 是（内容等同上游） |
   | `nohafix` | **我们自己的主线**：上游基线 + 全部 fork 补丁，发布包从这里构建 | **不推** |
-  | `upstream-pr` | **对上游的唯一通道**：每次提 PR 前 `git reset --hard upstream/master` 再拣提交 | 是 |
+  | `upstream-pr` | **对上游的通道（当前不存在，已删除）**：确实要提 PR 时重建、拣完提交用完即删 | 是（重建后） |
 
 - 上游只走 PR，绝不直接推 `upstream`；PR 分支**永远从 `upstream/master` 起建**，因此不会带上本文件、`README.md` 的 fork 提示、`-O1` 守卫、发布脚本这类 fork 自有内容。
 - `master` 可随时同步（GitHub 的 "Sync fork"，或本地 `git fetch upstream && git merge --ff-only upstream/master`）。
-- **一条 `upstream-pr` 同时只服务一个未合并的 PR**：上一个 PR 合并或关闭后再 force-push 复用它；确实需要两条 PR 并行时，临时再开一条，用完删掉。
+- **PR 通道当前关闭**（2026-10-17 决定）：PR #1627 因病因判断被上游指出错误而关闭，`upstream-pr`（远端 + 本地）已删除；今后**默认不提上游**，只有确认"这是上游的通用 bug 且有实测证据"时才重建通道、**单独立一个小 PR**。
 - **本文件与 `README.md` 顶部的提示属于本 fork 自有内容**，不打算同步回上游。
 
 ## 六、许可
