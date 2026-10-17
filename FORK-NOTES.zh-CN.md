@@ -81,7 +81,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 # 期望： C_FLAGS = -w -O1 -DNDEBUG
 ```
 
-- 根 `CMakeLists.txt` 里**已经带上了守卫**（原主题分支 `mingw-o1-guard` 的两个提交已并入 `otvdm-patched`）：当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。原先那条独立分支（`mingw-o1-guard`）已删除：内容就在 `patched` 里（提交 `8ea3a5b9`、`9d1073c4`），将来若要单独提给上游，从这里拣这两条即可。
+- 根 `CMakeLists.txt` 里**已经带上了守卫**（原主题分支 `mingw-o1-guard` 的两个提交已并入 `patched`）：当 MinGW + GCC 且**当前配置**的旗标里含 `-O2`/`-O3`/`-Os` 时自动降为 `-O1` 并打印一行原因。它按当前 build type 取变量名（`CMAKE_<LANG>_FLAGS_<CONFIG>`），所以 `Release`、`RelWithDebInfo`、`MinSizeRel` 三种配置都**真的**生效；显式给的 `-O2`/`-O3`/`-Os` 同样降级，显式 `-O1` 不动。原先那条独立分支（`mingw-o1-guard`）已删除：内容就在 `patched` 里（提交 `8ea3a5b9`、`9d1073c4`），将来若要单独提给上游，从这里拣这两条即可。
 
 ### 2. MinGW 版交付包的两个必要调整
 
