@@ -18,6 +18,9 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(winoldap);
 
+void Warn32BitChild(LPCSTR filename, LPCSTR cmdline);
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
 //LRESULT WINAPI WndProc(HWND16 h, &)
 LRESULT WINAPI WndProc(HWND16 hwnd16, UINT16 msg, WPARAM16 wParam, LPARAM lParam)
 {
@@ -105,11 +108,14 @@ static VOID start_dos_exe( LPCSTR filename, LPCSTR cmdline )
     PROCESS_INFORMATION pi;
     STARTUPINFOA si = {0};
     DWORD count;
+    char redir_buf[MAX_PATH];
     si.cb = sizeof(STARTUPINFOA);
     char exename[MAX_PATH];
+    filename = RedirectVirtualDrivePath(filename, redir_buf, MAX_PATH);
     GetModuleFileNameA(GetModuleHandleA(NULL), exename, sizeof(exename));
     krnl386_get_config_string("otvdm", "dosemu", exename, exename, sizeof(exename));
-    snprintf(fullcmdline, 512, "\"%s\" %s %s", exename, filename, cmdline);
+    snprintf(fullcmdline, sizeof(fullcmdline), "\"%s\" %s %s", exename, filename, cmdline);
+    Warn32BitChild(filename, cmdline);
     BOOL ret = CreateProcessA(NULL, fullcmdline, NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
     
     if (!ret)

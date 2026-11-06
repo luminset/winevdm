@@ -979,5 +979,8 @@ WORD GLOBAL_GetSegNum(HGLOBAL16 hg);
 
 __declspec(dllexport) LPCSTR RedirectDriveRoot(LPCSTR path, LPSTR to, size_t max_len, BOOL silence);
 __declspec(dllexport) LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+__declspec(dllexport) LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+void UnredirectDriveRoot(LPSTR buf, SIZE_T buf_len);
+void UnredirectSystemDir(LPSTR buf, SIZE_T buf_len);
 
 #endif  /* __WINE_KERNEL16_PRIVATE_H */

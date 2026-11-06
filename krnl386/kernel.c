@@ -73,17 +73,20 @@ static void thread_detach(void)
 const char *GetRedirectWindowsDir();
 void init_wow_handle();
 LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+LPCSTR RedirectDriveRoot(LPCSTR path, LPSTR to, size_t max_len, BOOL silence);
 
 static void redirect_current_dir()
 {
     char curdir[MAX_PATH];
     char curdir16[MAX_PATH];
+    char drivebuf[MAX_PATH];
     LPCSTR redirected;
     GetCurrentDirectoryA(MAX_PATH, curdir);
     redirected = RedirectSystemDir(curdir, curdir16, MAX_PATH);
-    if (redirected == curdir16)
+    redirected = RedirectDriveRoot(redirected, drivebuf, MAX_PATH, TRUE);
+    if (redirected != curdir)
     {
-        ERR("current directory: %s -> %s\n", curdir, curdir16);
+        ERR("current directory: %s -> %s\n", curdir, redirected);
         SetCurrentDirectoryA(redirected);
     }
     for (int i = 'A'; i <= 'Z'; i++)
@@ -92,9 +95,10 @@ static void redirect_current_dir()
         if (GetEnvironmentVariableA(env, curdir, MAX_PATH))
         {
             redirected = RedirectSystemDir(curdir, curdir16, MAX_PATH);
-            if (redirected == curdir16)
+            redirected = RedirectDriveRoot(redirected, drivebuf, MAX_PATH, TRUE);
+            if (redirected != curdir)
             {
-                TRACE("current directory(env): %s -> %s\n", curdir, curdir16);
+                TRACE("current directory(env): %s -> %s\n", curdir, redirected);
                 SetEnvironmentVariableA(env, redirected);
             }
         }

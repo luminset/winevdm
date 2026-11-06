@@ -95,6 +95,193 @@ fail:
     LocalFree(pSecurityDescriptor);
     return NT_SUCCESS(accessStatus);
 }
+static char virtual_drive = 0;
+static BOOL virtual_drive_loaded = FALSE;
+static BOOL virtual_drive_explicit = FALSE;
+
+static void load_virtual_drive(void)
+{
+    char cfg[16];
+    DWORD n;
+    if (virtual_drive_loaded) return;
+    virtual_drive_loaded = TRUE;
+    /* Opt-in: the virtual drive stays disabled unless [otvdm] VirtualDrive is
+     * present and non-empty. A missing key must never silently move the C:\
+     * paths of already installed programs into <otvdm>\C; an existing
+     * deployment keeps exactly the host paths it had before this feature. */
+    n = krnl386_get_config_string("otvdm", "VirtualDrive", "", cfg, sizeof(cfg));
+    if (!n || !cfg[0])
+    {
+        virtual_drive = 0;
+        return;
+    }
+    if (cfg[0] >= 'a' && cfg[0] <= 'z') virtual_drive = cfg[0] - 'a' + 'A';
+    else if (cfg[0] >= 'A' && cfg[0] <= 'Z') virtual_drive = cfg[0];
+    else virtual_drive = 0;
+    virtual_drive_explicit = virtual_drive != 0;
+}
+
+/* Directory holding otvdm.exe, in short form: <otvdm>. The virtual drive lives
+ * in <otvdm>\<letter>. This is deliberately computed from the executable and
+ * not from GetRedirectWindowsDir(), so a custom [otvdm] WINDIR (absolute or
+ * rooted) cannot break the mapping. */
+static const char *GetVirtualDriveBase(void)
+{
+    static char base[MAX_PATH];
+    if (base[0]) return base;
+    GetModuleFileNameA(NULL, base, sizeof(base));
+    PathRemoveFileSpecA(base);
+    GetShortPathNameA(base, base, sizeof(base));
+    PathRemoveBackslashA(base);
+    return base;
+}
+
+/* Path that 16-bit programs should see for the Windows directory.
+ * With a virtual drive this is C:\WINDOWS even though the real directory
+ * lives next to otvdm.exe. */
+const char *GetVirtualWindowsDir(void)
+{
+    static char vpath[MAX_PATH];
+    char ini[MAX_PATH];
+    load_virtual_drive();
+    if (!virtual_drive) return GetRedirectWindowsDir();
+    if (vpath[0]) return vpath;
+    if (!krnl386_get_config_string("otvdm", "WINDIR", "WINDOWS", ini, sizeof(ini)))
+        strcpy(ini, "WINDOWS");
+    if (ini[0] && ini[1] == ':') return GetRedirectWindowsDir();
+    if (ini[0] == '\\' || ini[0] == '/') return GetRedirectWindowsDir();
+    if (ini[0] && ini[1] == '\\')
+        snprintf(vpath, sizeof(vpath), "%c:%s", virtual_drive, ini);
+    else
+        snprintf(vpath, sizeof(vpath), "%c:\\%s", virtual_drive, ini);
+    vpath[sizeof(vpath) - 1] = '\0';
+    return vpath;
+}
+
+/* TRUE when 16-bit paths on the configured drive are redirected under the
+ * otvdm directory. Used by the 32-bit child-process warning. */
+BOOL IsVirtualDriveActive(void)
+{
+    load_virtual_drive();
+    return virtual_drive != 0;
+}
+
+/* TRUE only when [otvdm] VirtualDrive is present and non-empty, i.e. when the
+ * user opted in. Warnings keyed on this only fire for such installations. */
+BOOL IsVirtualDriveExplicit(void)
+{
+    load_virtual_drive();
+    return virtual_drive_explicit && virtual_drive != 0;
+}
+
+static BOOL contains_ci(LPCSTR haystack, LPCSTR needle)
+{
+    size_t len = strlen(needle);
+    if (!haystack || !len) return FALSE;
+    for (; *haystack; haystack++)
+        if (!_strnicmp(haystack, needle, len)) return TRUE;
+    return FALSE;
+}
+
+static BOOL is_installer_like(LPCSTR s)
+{
+    return contains_ci(s, "setup") || contains_ci(s, "install") ||
+           contains_ci(s, "unwise") || contains_ci(s, "~gl") ||
+           contains_ci(s, "glbs") || contains_ci(s, "wise");
+}
+
+/* 16-bit installers often unpack a 32-bit setup engine (Wise/InstallShield
+ * ~GL_*.EXE). CreateProcessA starts that engine natively, where the 16-bit
+ * virtual-drive redirect does not apply. Tell the user instead of silently
+ * writing into the real C: drive. */
+__declspec(dllexport) void Warn32BitChild(LPCSTR filename, LPCSTR cmdline)
+{
+    DWORD type;
+    static BOOL warned;
+    char text[1024];
+    typedef int (WINAPI *MESSAGEBOXA)(HWND, LPCSTR, LPCSTR, UINT);
+    HMODULE user32;
+    MESSAGEBOXA mb;
+    if (warned || !IsVirtualDriveExplicit()) return;
+    if (!GetBinaryTypeA(filename, &type)) return;
+    /* GetBinaryTypeA returns SCS_32BIT_BINARY (0) for PE32. */
+    if (type != 0 && type != 6) return;
+
+    if (!is_installer_like(filename) && !is_installer_like(cmdline)) return;
+    ERR("32-bit child process %s bypasses the virtual drive; C:\\ paths go to the real C: drive.\n", filename);
+
+    warned = TRUE;
+    sprintf(text,
+            "This program starts a 32-bit child process:\n%s\n\n"
+            "otvdm can redirect C:\\ paths only for 16-bit code. The 32-bit child runs natively and writes to the real C: drive, not to <otvdm>\\C.\n\n"
+            "For an installer, use a sandbox/VM, or choose an install directory under <otvdm>\\C.",
+            filename);
+    user32 = GetModuleHandleA("user32.dll");
+    mb = user32 ? (MESSAGEBOXA)GetProcAddress(user32, "MessageBoxA") : NULL;
+    if (mb) mb(NULL, text, "otvdm - 32-bit installer", 0x00000030L);
+}
+
+static BOOL buffer_contains(LPCSTR buf, size_t len, LPCSTR needle)
+{
+    size_t n = strlen(needle), i;
+    if (!buf || !n) return FALSE;
+    for (i = 0; i + n <= len; i++)
+        if (!_strnicmp(buf + i, needle, n)) return TRUE;
+    return FALSE;
+}
+
+/* Some legacy installers are 16-bit stubs that unpack a 32-bit engine or use
+ * a private setup runtime. Warn once at launch, before any file is written. */
+LPCSTR RedirectDriveRoot(LPCSTR path, LPSTR to, size_t max_len, BOOL silence);
+LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+
+void WarnLegacyInstaller(LPCSTR filename)
+{
+    static const char *markers[] = {
+        "GLBSInstall", "GLBSSTUB", "WiseMain", "InstallShield",
+        "UNWISE", "STUB.exe", "_INS"
+    };
+    static BOOL warned;
+    HANDLE h;
+    DWORD size, read;
+    char *buf;
+    BOOL found = FALSE;
+    size_t i;
+    char text[1024];
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR real;
+    typedef int (WINAPI *MESSAGEBOXA)(HWND, LPCSTR, LPCSTR, UINT);
+    HMODULE user32;
+    MESSAGEBOXA mb;
+
+    if (warned || !filename || !IsVirtualDriveExplicit()) return;
+    real = RedirectSystemDir(filename, b1, MAX_PATH);
+    real = RedirectDriveRoot(real, b2, MAX_PATH, TRUE);
+    h = CreateFileA(real, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    size = GetFileSize(h, NULL);
+    if (size == 0 || size > 8 * 1024 * 1024) { CloseHandle(h); return; }
+    buf = HeapAlloc(GetProcessHeap(), 0, size);
+    if (!buf) { CloseHandle(h); return; }
+    if (!ReadFile(h, buf, size, &read, NULL) || read != size) { HeapFree(GetProcessHeap(), 0, buf); CloseHandle(h); return; }
+    CloseHandle(h);
+    for (i = 0; i < ARRAY_SIZE(markers); i++)
+        if (buffer_contains(buf, size, markers[i])) { found = TRUE; break; }
+    HeapFree(GetProcessHeap(), 0, buf);
+    if (!found) return;
+
+    warned = TRUE;
+    sprintf(text,
+            "This looks like a legacy 16-bit installer that may unpack a 32-bit setup engine:\n%s\n\n"
+            "otvdm can redirect C:\\ paths only for 16-bit code. The installer may write to the real C: drive, not to <otvdm>\\C.\n\n"
+            "Use a sandbox/VM, or choose an install directory under <otvdm>\\C.",
+            filename);
+    user32 = GetModuleHandleA("user32.dll");
+    mb = user32 ? (MESSAGEBOXA)GetProcAddress(user32, "MessageBoxA") : NULL;
+    if (mb) mb(NULL, text, "otvdm - legacy installer", 0x00000030L);
+}
+
 BOOL is_readonly_directory(LPCSTR path)
 {
     DWORD attr = GetFileAttributesA(path);
@@ -107,95 +294,153 @@ BOOL is_readonly_directory(LPCSTR path)
 __declspec(dllexport) LPCSTR RedirectDriveRoot(LPCSTR path, LPSTR to, size_t max_len, BOOL silence)
 {
     LPCSTR path_old = path;
-    enum WRITABLE_CACHE
-    {
-        NOTCACHED,
-        ALLOWED,
-        DENIED,
-        READONLY,
-    };
-    static enum WRITABLE_CACHE writable_cache[26];
-    char drive = path ? path[0] : 0;
-    char root[4] = { drive, ':', '\\', 0 };
-    char drive_buf[5] = { '.', '.', '\\', drive, 0 };
-    if (!path)
-        return NULL;
+    LPCSTR fail_ret;
+    char shortpath[MAX_PATH];
+    char drive;
+    const char *rest;
+    const char *base;
+    char full[MAX_PATH];
+    char canonical[MAX_PATH];
+    char leaf[2];
+
+    if (!path) return NULL;
+    /* Fast path: only the configured drive letter can be virtual. Relative
+     * names, other drives and UNC paths are returned untouched, so the host
+     * file API keeps its normal meaning and no syscall is spent on them. */
     if (!(path[0] && path[1] == ':' && (path[2] == 0 || path[2] == '\\' || path[2] == '/')))
         return path;
-    if (!((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')))
-        return path;
-    if (drive >= 'a' && drive <= 'z')
+    drive = path[0];
+    if (drive >= 'a' && drive <= 'z') drive -= 'a' - 'A';
+    if (drive < 'A' || drive > 'Z') return path;
+    load_virtual_drive();
+    if (!virtual_drive || drive != virtual_drive) return path;
+
+    fail_ret = (path_old == to) ? to : path_old;
+    /* Canonicalize the 16-bit path first: ".." components then collapse inside
+     * the virtual root instead of rejecting the whole path, which used to leak
+     * it through to the real C: drive. */
+    if (!PathCanonicalizeA(canonical, path)) return fail_ret;
+    if (canonical[1] != ':') return fail_ret;
+    base = GetVirtualDriveBase();
+    if (!base[0]) return fail_ret;
+    /* Paths that already point inside the otvdm directory are real paths, not
+     * virtual-drive paths. This keeps the redirect idempotent when the
+     * deployment itself lives on the virtual drive letter. The short-name form
+     * is checked too, because a long input path such as C:\winevdm\test-deploy
+     * would not match C:\winevdm\TEST-D~1. */
     {
-        drive -= 'a' - 'A';
-    }
-    path += 2;
-    if (path[0])
-        path += 1;
-    if (strchr(path, '\\'))
-        return path_old;
-    if (strchr(path, '/'))
-        return path_old;
-    if (writable_cache[drive - 'A'] == NOTCACHED)
-    {
-        if (is_readonly_directory(root))
-        {
-            writable_cache[drive - 'A'] = READONLY;
-            return path_old;
-        }
-        if (can_write_directory(root))
-        {
-            writable_cache[drive - 'A'] = ALLOWED;
-            return path_old;
-        }
-        else
-        {
-            writable_cache[drive - 'A'] = DENIED;
-        }
-    }
-    else
-    {
-        if (writable_cache[drive - 'A'] == ALLOWED || writable_cache[drive - 'A'] == READONLY)
-        {
-            return path_old;
-        }
+        size_t base_len = strlen(base);
+        if (strlen(path) >= base_len && _strnicmp(path, base, base_len) == 0 &&
+            (path[base_len] == '\\' || path[base_len] == '\0'))
+            return fail_ret;
+        if (GetShortPathNameA(path, shortpath, sizeof(shortpath)) &&
+            strlen(shortpath) >= base_len && _strnicmp(shortpath, base, base_len) == 0 &&
+            (shortpath[base_len] == '\\' || shortpath[base_len] == '\0'))
+            return fail_ret;
     }
 
-    PathCombineA(to, GetRedirectWindowsDir(), drive_buf);
-    CreateDirectoryA(to, NULL);
-    PathCombineA(to, to, path);
-    if (!silence)
-    {
-        ERR("%s => %s\n", path_old, to);
-    }
+    rest = canonical + 2;
+    if (*rest == '\\' || *rest == '/') rest++;
+    leaf[0] = drive;
+    leaf[1] = 0;
+    if (!PathCombineA(full, base, leaf)) return fail_ret;
+    CreateDirectoryA(full, NULL);   /* <otvdm>\C is the virtual drive root */
+    if (*rest && !PathCombineA(full, full, rest)) return fail_ret;
+    if (!PathCanonicalizeA(canonical, full)) return fail_ret;
+    if (strlen(canonical) >= max_len) return fail_ret;
+    strcpy(to, canonical);
+    if (!silence) ERR("%s => %s\n", path_old, canonical);
     return to;
 }
-/* buf: X:\XXX\YYY\C\ZZZ => C:\ZZZ */
+/* buf: <otvdm>\C\ZZZ => C:\ZZZ */
 void UnredirectDriveRoot(LPSTR buf, SIZE_T buf_len)
 {
-    char drive_root[MAX_PATH];
-    PathCombineA(drive_root, GetRedirectWindowsDir(), "..\\");
-    if (memcmp(drive_root, buf, min(strlen(buf), strlen(drive_root))) == 0)
+    const char *base;
+    const char *src;
+    const char *drive_dir;
+    char shortbuf[MAX_PATH];
+    char tmp[MAX_PATH];
+    size_t base_len;
+
+    if (!buf || !buf_len) return;
+    load_virtual_drive();
+    if (!virtual_drive) return;     /* nothing was mapped, nothing to undo */
+    base = GetVirtualDriveBase();
+    if (!base[0]) return;
+    base_len = strlen(base);
+    src = buf;
+    /* Accept both the long and the short form of the deployment path; the
+     * redirect produces the short one, but GetModuleFileNameA/cwd callers may
+     * hand us the long one. Comparison is case insensitive, like the redirect. */
+    if (!(strlen(buf) > base_len && _strnicmp(buf, base, base_len) == 0 && buf[base_len] == '\\'))
     {
-        LPCSTR drive_dir = buf + strlen(drive_root);
-        if (drive_dir[0] >= 'A' && drive_dir[0] <= 'Z' && drive_dir[1] == '\\')
-        {
-            buf[0] = drive_dir[0];
-            buf[1] = ':';
-            buf[2] = '\\';
-            memmove(buf + 3, drive_dir + 2, strlen(drive_dir + 2) + 1);
-        }
-        return;
+        if (!GetShortPathNameA(buf, shortbuf, sizeof(shortbuf))) return;
+        if (!(strlen(shortbuf) > base_len && _strnicmp(shortbuf, base, base_len) == 0 &&
+              shortbuf[base_len] == '\\'))
+            return;
+        src = shortbuf;
     }
-    return;
+
+    drive_dir = src + base_len + 1;     /* <otvdm>\C\... -> "C\..." */
+    if (!((drive_dir[0] >= 'A' && drive_dir[0] <= 'Z') ||
+          (drive_dir[0] >= 'a' && drive_dir[0] <= 'z')))
+        return;
+    if (drive_dir[1] != '\\' && drive_dir[1] != '\0') return;
+
+    tmp[0] = drive_dir[0] >= 'a' ? drive_dir[0] - 'a' + 'A' : drive_dir[0];
+    tmp[1] = ':';
+    tmp[2] = '\\';
+    if (drive_dir[1] == '\0') tmp[3] = '\0';
+    else strcpy(tmp + 3, drive_dir + 2);
+    strncpy(buf, tmp, buf_len - 1);
+    buf[buf_len - 1] = '\0';
 }
 
+/* buf: <otvdm>\WINDOWS\SYSTEM => C:\WINDOWS\SYSTEM */
+void UnredirectSystemDir(LPSTR buf, SIZE_T buf_len)
+{
+    const char *real = GetRedirectWindowsDir();
+    const char *virt = GetVirtualWindowsDir();
+    const char *src = buf;
+    char shortbuf[MAX_PATH];
+    size_t len;
+    char tmp[MAX_PATH];
+
+    if (!buf || !buf_len) return;
+    len = strlen(real);
+    if (!(strlen(buf) >= len && _strnicmp(buf, real, len) == 0 &&
+          (buf[len] == '\\' || buf[len] == '\0')))
+    {
+        /* the caller may hold the long form of the same directory */
+        if (!GetShortPathNameA(buf, shortbuf, sizeof(shortbuf))) return;
+        if (!(strlen(shortbuf) >= len && _strnicmp(shortbuf, real, len) == 0 &&
+              (shortbuf[len] == '\\' || shortbuf[len] == '\0')))
+            return;
+        src = shortbuf;
+    }
+    if (strlen(virt) + strlen(src + len) >= sizeof(tmp)) return;
+    strcpy(tmp, virt);
+    strcat(tmp, src + len);
+    strncpy(buf, tmp, buf_len - 1);
+    buf[buf_len - 1] = '\0';
+}
+
+/* TRUE when path is exactly `prefix` or starts with `prefix` followed by a
+ * separator. PathCommonPrefixA alone would also accept "C:\WINDOWSX" as being
+ * inside "C:\WINDOWS", which mapped a sibling directory into the Windows dir. */
+static BOOL path_has_dir_prefix(LPCSTR path, LPCSTR prefix)
+{
+    size_t n = strlen(prefix);
+    if (strlen(path) < n || _strnicmp(path, prefix, n)) return FALSE;
+    return path[n] == '\\' || path[n] == '/' || path[n] == '\0';
+}
 /*
  * C:\WINDOWS-> redirected windows dir
  * C:\WINDOWS\SYSTEM32 -> redirected windows dir\SYSTEM
  */
 __declspec(dllexport) LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len)
 {
-	char dirbuf[240];
+	char dirbuf[MAX_PATH];
 	if (!EnableRedirectSystemDir) return path;
 	char buf[MAX_PATH];
 	if (!PathCanonicalizeA(buf, path))
@@ -203,25 +448,32 @@ __declspec(dllexport) LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max
 		return path;
 	}
 	char bufwdir[MAX_PATH];
-    GetWindowsDirectoryA(bufwdir, MAX_PATH);
+    strcpy(bufwdir, GetVirtualWindowsDir());
     size_t windir_len = strlen(bufwdir);
-	if (PathCommonPrefixA(buf, bufwdir, NULL) < windir_len)
+	if (!path_has_dir_prefix(buf, bufwdir))
 	{
-		return path;
+		/* Without the virtual drive the 16-bit view of the Windows directory is
+		 * the real <otvdm>\WINDOWS, but code that hard-codes C:\WINDOWS was
+		 * redirected before this feature existed. Keep honouring it, otherwise
+		 * switching the virtual drive off would not be a full rollback. */
+		if (virtual_drive) return path;
+		if (!GetWindowsDirectoryA(bufwdir, sizeof(bufwdir))) return path;
+		windir_len = strlen(bufwdir);
+		if (!path_has_dir_prefix(buf, bufwdir)) return path;
 	}
-	if (!PathAppendA(bufwdir, "system32"))
+	if (!PathAppendA(bufwdir, "SYSTEM32"))
 	{
 		return path;
 	}
 	//system32->system
-	if (PathCommonPrefixA(buf, bufwdir, NULL) >= strlen(bufwdir))
+	if (path_has_dir_prefix(buf, bufwdir))
 	{
 		memcpy(buf + strlen(bufwdir) - 2, buf + strlen(bufwdir), strlen(buf) - strlen(bufwdir) + 1);
 	}
 	//.\windir\ 
 	dirbuf[0] = '\0';
 	char *dir = &dirbuf[0];
-	GetModuleFileNameA(GetModuleHandleA("otvdm.exe"), dir, MAX_PATH);
+	GetModuleFileNameA(GetModuleHandleA("otvdm.exe"), dir, sizeof(dirbuf));
 	char *file = PathFindFileNameA(dir);
 	if (file != dir) *file = '\0';
 	if (!PathAppendA(dir, GetRedirectWindowsDir()))
@@ -237,6 +489,26 @@ __declspec(dllexport) LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max
 	*file = f;
 	PathCombineA(to, to, file);
 	return to;
+}
+
+/* Map a 16-bit path through both the Windows-directory redirect and the
+ * virtual drive. Two buffers are required: RedirectSystemDir may return b1,
+ * and RedirectDriveRoot must not write into the same buffer it is reading. */
+static LPCSTR RedirectPath16(LPCSTR path, LPSTR b1, LPSTR b2, size_t len)
+{
+    LPCSTR p = RedirectSystemDir(path, b1, len);
+    return RedirectDriveRoot(p, b2, len, TRUE);
+}
+
+/* Same mapping, exported for the other DLLs (mmsystem, storage, shell, ...)
+ * which have to map the file names they hand to the host as well. `to` must
+ * hold at least max_len bytes. */
+__declspec(dllexport) LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len)
+{
+    char b1[MAX_PATH];
+    if (!path) return path;
+    if (max_len > MAX_PATH) max_len = MAX_PATH;
+    return RedirectPath16(path, b1, to, max_len);
 }
 
 NTSYSAPI NTSTATUS NTAPI RtlUpcaseUnicodeStringToOemString(
@@ -528,9 +800,11 @@ BOOL16 WINAPI WriteProfileString16( LPCSTR section, LPCSTR entry,
     GetShortPathNameA(vdmpath, vdmpath, MAX_PATH);
     strcpy(realwinsys, windir);
     strcat(realwinsys, "\\SYSTEM");
+    char realsys[MAX_PATH];
+    PathCombineA(realsys, GetRedirectWindowsDir(), "SYSTEM");
 
     len = (strlen(vdmpath) + 1 + 2 +                                              /* search order: first current dir */
-           GetSystemDirectory16( NULL, 0 ) + 1 +            /* then system dir */
+           strlen(realsys) + 2 +                            /* then the redirected system dir */
            strlen(windir3) + 1 +            /* then windows dir */
            strlen( module ) + 1 +                           /* then module path */
            GetEnvironmentVariableA( "PATH16", NULL, 0 ) + 1 + /* then look in PATH */
@@ -542,7 +816,7 @@ BOOL16 WINAPI WriteProfileString16( LPCSTR section, LPCSTR entry,
     p += strlen(vdmpath);
     *p++ = ';';
 
-    GetSystemDirectory16( p, ret + len - p );
+    strcpy( p, realsys );
     p += strlen( p );
     *p++ = ';';
     strcpy(p, windir3);//GetWindowsDirectoryA( p, ret + len - p );
@@ -721,7 +995,7 @@ HFILE16 WINAPI OpenFile16( LPCSTR name, OFSTRUCT *ofs, UINT16 mode )
         {
             return HFILE_ERROR;
         }
-        name = RedirectDriveRoot(name, buf, ARRAY_SIZE(buf), FALSE);
+        name = RedirectDriveRoot(name, buf, ARRAY_SIZE(buf), TRUE);
         if (mode & OF_REOPEN)
             namew = strdupOEMtoW(name);
         else
@@ -870,6 +1144,7 @@ HFILE16 WINAPI OpenFile16( LPCSTR name, OFSTRUCT *ofs, UINT16 mode )
             ERR("RtlUpcaseUnicodeStringToOemString failed\n");
             ofs->szPathName[0] = '\0';
         }
+        UnredirectSystemDir(ofs->szPathName, ARRAY_SIZE(ofs->szPathName));
         UnredirectDriveRoot(ofs->szPathName, ARRAY_SIZE(ofs->szPathName));
         if (!(mode & OF_PARSE))
         {
@@ -943,10 +1218,9 @@ HFILE16 WINAPI _lclose16( HFILE16 hFile )
  */
 HFILE16 WINAPI _lcreat16( LPCSTR path, INT16 attr )
 {
-    CHAR buf[MAX_PATH];
-    path = RedirectSystemDir(path, buf, MAX_PATH);
-    path = RedirectDriveRoot(path, buf, MAX_PATH, FALSE);
-    return Win32HandleToDosFileHandle( (HANDLE)_lcreat( path, attr ) );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(path, b1, b2, MAX_PATH);
+    return Win32HandleToDosFileHandle( (HANDLE)_lcreat( p, attr ) );
 }
 
 /***********************************************************************
@@ -981,12 +1255,11 @@ LONG WINAPI _llseek16( HFILE16 hFile, LONG lOffset, INT16 nOrigin )
 HFILE16 WINAPI _lopen16( LPCSTR path, INT16 mode )
 {
     HFILE fh;
-    CHAR buf[MAX_PATH];
-    path = RedirectSystemDir(path, buf, MAX_PATH);
-    path = RedirectDriveRoot(path, buf, MAX_PATH, FALSE);
-    fh =_lopen(path, mode);
-    if((fh == INVALID_HANDLE_VALUE) && (GetLastError() == ERROR_ACCESS_DENIED) && is_cdrom_file(path))
-        fh = _lopen(path, OF_READ);
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(path, b1, b2, MAX_PATH);
+    fh =_lopen(p, mode);
+    if((fh == INVALID_HANDLE_VALUE) && (GetLastError() == ERROR_ACCESS_DENIED) && is_cdrom_file(p))
+        fh = _lopen(p, OF_READ);
     return Win32HandleToDosFileHandle((HANDLE)fh);
 }
 
@@ -1099,7 +1372,20 @@ UINT16 WINAPI GetTempFileName16( BYTE drive, LPCSTR prefix, UINT16 unique,
     if (drive & TF_FORCEDRIVE)
     {
         /* C:~preuuuu.TMP */
-        sprintf(temppath, "%c:", drive & ~TF_FORCEDRIVE);
+        char root[4] = "C:\\";
+        char mapped[MAX_TEMP_PATH];
+        root[0] = drive & ~TF_FORCEDRIVE;
+        /* A forced drive keeps the temp file in that drive's root; with the
+         * virtual drive that root is <otvdm>\<letter>, not the real one. */
+        if (RedirectDriveRoot(root, mapped, sizeof(mapped), TRUE) != root)
+        {
+            snprintf(temppath, sizeof(temppath), "%s", mapped);
+            PathAddBackslashA(temppath);
+        }
+        else
+        {
+            snprintf(temppath, sizeof(temppath), "%c:", drive & ~TF_FORCEDRIVE);
+        }
     }
     else
     {
@@ -1490,16 +1776,23 @@ const char *GetRedirectWindowsDir()
 
 static void RedirectPrivateProfileStringWindowsDir(LPCSTR filename, LPCSTR output)
 {
+    char buf[MAX_PATH];
+    LPCSTR mapped;
     if (!filename)
         filename = "win.ini";
     if (PathIsFileSpecA(filename) && !strchr(filename, '/'))
     {
-        PathCombineA(output, GetRedirectWindowsDir(), filename);
+        PathCombineA(buf, GetRedirectWindowsDir(), filename);
     }
     else
     {
-        strcpy(output, filename);
+        strcpy(buf, filename);
     }
+    /* A profile file named by a full 16-bit path must follow the virtual drive
+     * as well, otherwise C:\APP\*.INI would be written to the real C: drive. */
+    mapped = RedirectDriveRoot(buf, (LPSTR)output, MAX_PATH, TRUE);
+    if (mapped != output)
+        lstrcpynA((LPSTR)output, mapped, MAX_PATH);
 }
 static BOOL append_ini_section(LPSTR data, SIZE_T *buf_pos, SIZE_T len, LPCSTR entry)
 {
@@ -1729,7 +2022,7 @@ BOOL16 WINAPI WritePrivateProfileString16( LPCSTR section, LPCSTR entry,
  */
 UINT16 WINAPI GetWindowsDirectory16( LPSTR path, UINT16 count )
 {
-    const char *w = GetRedirectWindowsDir();
+    const char *w = GetVirtualWindowsDir();
     UINT16 len = strlen(w);
     if (len + 1 > count)
         return strlen(w) + 1;
@@ -1812,7 +2105,9 @@ WORD WINAPI GetPrivateProfileSectionNames16( LPSTR buffer, WORD size,
  */
 BOOL16 WINAPI CreateDirectory16( LPCSTR path, LPVOID dummy )
 {
-    return CreateDirectoryA( path, NULL );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(path, b1, b2, MAX_PATH);
+    return CreateDirectoryA( p, NULL );
 }
 
 
@@ -1821,7 +2116,9 @@ BOOL16 WINAPI CreateDirectory16( LPCSTR path, LPVOID dummy )
  */
 BOOL16 WINAPI RemoveDirectory16( LPCSTR path )
 {
-    return RemoveDirectoryA( path );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(path, b1, b2, MAX_PATH);
+    return RemoveDirectoryA( p );
 }
 
 
@@ -1830,7 +2127,9 @@ BOOL16 WINAPI RemoveDirectory16( LPCSTR path )
  */
 BOOL16 WINAPI DeleteFile16( LPCSTR path )
 {
-    return DeleteFileA( path );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(path, b1, b2, MAX_PATH);
+    return DeleteFileA( p );
 }
 
 
@@ -1848,7 +2147,15 @@ UINT16 WINAPI SetHandleCount16( UINT16 count )
  */
 WORD WINAPI GetShortPathName16( LPCSTR longpath, LPSTR shortpath, WORD len )
 {
-    return GetShortPathNameA( longpath, shortpath, len );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(longpath, b1, b2, MAX_PATH);
+    WORD r = GetShortPathNameA( p, shortpath, len );
+    if (r && shortpath && len)
+    {
+        UnredirectSystemDir(shortpath, len);
+        UnredirectDriveRoot(shortpath, len);
+    }
+    return r;
 }
 
 
@@ -1892,7 +2199,13 @@ BOOL16 WINAPI GetPrivateProfileStruct16(LPCSTR section, LPCSTR key,
  */
 UINT16 WINAPI GetCurrentDirectory16( UINT16 buflen, LPSTR buf )
 {
-    return GetCurrentDirectoryA( buflen, buf );
+    UINT16 r = GetCurrentDirectoryA( buflen, buf );
+    if (r && buf && buflen)
+    {
+        UnredirectSystemDir(buf, buflen);
+        UnredirectDriveRoot(buf, buflen);
+    }
+    return r;
 }
 
 
@@ -1901,25 +2214,32 @@ UINT16 WINAPI GetCurrentDirectory16( UINT16 buflen, LPSTR buf )
  */
 BOOL16 WINAPI SetCurrentDirectory16( LPCSTR dir )
 {
-    char fulldir[MAX_PATH];
+    char b1[MAX_PATH], b2[MAX_PATH];
+    char realwd[MAX_PATH];
+    char virt[MAX_PATH];
+    LPCSTR p = RedirectPath16(dir, b1, b2, MAX_PATH);
 
-    if (!GetFullPathNameA( dir, MAX_PATH, fulldir, NULL )) return FALSE;
+    if (!SetCurrentDirectoryA( p )) return FALSE;
+    if (!GetCurrentDirectoryA( MAX_PATH, realwd )) return TRUE;
+    /* Keep the TDB in the same short, drive-relative form TASK_Create uses:
+     * "\APP" for a subdirectory, "" for a drive root. */
+    GetShortPathNameA( realwd, realwd, sizeof(realwd) );
+    strcpy( virt, realwd );
+    UnredirectSystemDir( virt, MAX_PATH );
+    UnredirectDriveRoot( virt, MAX_PATH );
 
-    if (!SetCurrentDirectoryA( dir )) return FALSE;
-
-    if (fulldir[0] && fulldir[1] == ':')
+    if (virt[0] && virt[1] == ':')
     {
         TDB *pTask = GlobalLock16( GetCurrentTask() );
         char env_var[4] = "=A:";
 
-        env_var[1] = fulldir[0];
-        SetEnvironmentVariableA( env_var, fulldir );
+        env_var[1] = virt[0];
+        SetEnvironmentVariableA( env_var, virt );
 
-        /* update the directory in the TDB */
         if (pTask)
         {
-            pTask->curdrive = 0x80 | (fulldir[0] - 'A');
-            GetShortPathNameA( fulldir + 2, pTask->curdir, sizeof(pTask->curdir) );
+            pTask->curdrive = 0x80 | (virt[0] - 'A');
+            lstrcpynA( pTask->curdir, virt + 2, sizeof(pTask->curdir) );
         }
     }
     return TRUE;
@@ -1933,10 +2253,12 @@ HANDLE16 WINAPI FindFirstFile16( LPCSTR path, WIN32_FIND_DATAA *data )
 {
     HGLOBAL16 h16;
     HANDLE handle, *ptr;
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(path, b1, b2, MAX_PATH);
 
     if (!(h16 = GlobalAlloc16( GMEM_MOVEABLE, sizeof(handle) ))) return INVALID_HANDLE_VALUE16;
     ptr = GlobalLock16( h16 );
-    *ptr = handle = FindFirstFileA( path, data );
+    *ptr = handle = FindFirstFileA( p, data );
     GlobalUnlock16( h16 );
 
     if (handle == INVALID_HANDLE_VALUE)
@@ -2029,7 +2351,9 @@ INT16 WINAPI GetProfileSection16( LPCSTR section, LPSTR buffer, UINT16 len )
  */
 DWORD WINAPI GetFileAttributes16( LPCSTR name )
 {
-    return GetFileAttributesA( name );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(name, b1, b2, MAX_PATH);
+    return GetFileAttributesA( p );
 }
 
 
@@ -2038,7 +2362,9 @@ DWORD WINAPI GetFileAttributes16( LPCSTR name )
  */
 BOOL16 WINAPI SetFileAttributes16( LPCSTR lpFileName, DWORD attributes )
 {
-    return SetFileAttributesA( lpFileName, attributes );
+    char b1[MAX_PATH], b2[MAX_PATH];
+    LPCSTR p = RedirectPath16(lpFileName, b1, b2, MAX_PATH);
+    return SetFileAttributesA( p, attributes );
 }
 
 

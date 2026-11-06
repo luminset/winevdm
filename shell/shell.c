@@ -51,6 +51,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(shell);
 extern HINSTANCE WINAPI WOWShellExecute(HWND hWnd, LPCSTR lpOperation,LPCSTR lpFile,
                                         LPCSTR lpParameters,LPCSTR lpDirectory,
                                         INT iShowCmd, void *callback);
+void Warn32BitChild(LPCSTR filename, LPCSTR cmdline);
 
 #define HINSTANCE_32(h16)	((HINSTANCE)(ULONG_PTR)(h16))
 #define HINSTANCE_16(h32)	(LOWORD(h32))
@@ -363,6 +364,7 @@ HICON WINAPI ExtractIconNE(HINSTANCE hInstance, LPCSTR lpszFile, UINT nIconIndex
 	return NULL;
 }
 __declspec(dllimport) LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+__declspec(dllimport) LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
 /*************************************************************************
  *             ExtractIcon   (SHELL.34)
  */
@@ -722,6 +724,11 @@ HINSTANCE16 WINAPI ShellExecute16( HWND16 hWnd, LPCSTR lpOperation,
                                    LPCSTR lpDirectory, INT16 iShowCmd )
 {
     void *callback = is_reactos_or_wine() ? (void*)SHELL_Execute16 : (void*)SHELL_Execute16_Windows;
+    char filebuf[MAX_PATH];
+    char dirbuf[MAX_PATH];
+    /* Follow the virtual drive for the executed file and its working dir. */
+    if (lpFile) lpFile = RedirectVirtualDrivePath(lpFile, filebuf, MAX_PATH);
+    if (lpDirectory) lpDirectory = RedirectVirtualDrivePath(lpDirectory, dirbuf, MAX_PATH);
     HINSTANCE rret1632 = WOWShellExecute(HWND_32(hWnd), lpOperation, lpFile, lpParameters,
         lpDirectory, iShowCmd, callback);
     if (rret1632 >= 32)
@@ -732,6 +739,7 @@ HINSTANCE16 WINAPI ShellExecute16( HWND16 hWnd, LPCSTR lpOperation,
     {
         return rret1632;
     }
+	Warn32BitChild(lpFile, lpParameters);
 	HINSTANCE rret = ShellExecuteA(HWND_32(hWnd), lpOperation, lpFile, lpParameters,
 		lpDirectory, iShowCmd);
 	if (GetLastError() == 0x000000d8)

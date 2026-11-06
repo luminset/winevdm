@@ -1024,6 +1024,8 @@ static HINSTANCE16 NE_LoadModule( LPCSTR name, BOOL lib_only )
  *
  * Load a built-in Win16 module. Helper function for NE_LoadBuiltinModule.
  */
+LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+
 static HMODULE16 NE_DoLoadBuiltinModule( const IMAGE_DOS_HEADER *mz_header, const char *file_name,
                                          HMODULE owner32 )
 {
@@ -1036,12 +1038,15 @@ static HMODULE16 NE_DoLoadBuiltinModule( const IMAGE_DOS_HEADER *mz_header, cons
     if (strlen(file_name) < 2 || file_name[1] != ':')
     {
         char sys_dir[OFS_MAXPATHNAME];
+        char redir[MAX_PATH];
+        LPCSTR real;
         GetSystemDirectory16(sys_dir, OFS_MAXPATHNAME);
         PathCombineA(abs_file_name, sys_dir, file_name);
         if (!*PathFindExtensionA(abs_file_name))
             PathAddExtensionA(abs_file_name, ".DLL");
         strupr(abs_file_name);
-        if (PathFileExistsA(abs_file_name))
+        real = RedirectSystemDir(abs_file_name, redir, MAX_PATH);
+        if (PathFileExistsA(real))
         {
             file_name = abs_file_name;
         }
@@ -1284,6 +1289,9 @@ static HINSTANCE16 NE_CreateThread( NE_MODULE *pModule, WORD cmdShow, LPCSTR cmd
 
 
 
+void Warn32BitChild(LPCSTR filename, LPCSTR cmdline);
+void WarnLegacyInstaller(LPCSTR filename);
+
 typedef struct tagLOADPARMS32 {
     LPSTR lpEnvAddress;
     LPSTR lpCmdLine;
@@ -1327,6 +1335,8 @@ HANDLE WINAPI LoadModule_wine_implementation(LPCSTR name, LPVOID paramBlock, HAN
         startup.dwFlags = STARTF_USESHOWWINDOW;
         startup.wShowWindow = ((WORD *)params->lpCmdShow)[1];
     }
+
+    Warn32BitChild(filename, cmdline);
 
     if (CreateProcessA(filename, cmdline, NULL, NULL, FALSE, 0,
         params->lpEnvAddress, NULL, &startup, &info))
@@ -1372,12 +1382,16 @@ HANDLE WINAPI LoadModule_wine_implementation(LPCSTR name, LPVOID paramBlock, HAN
     return ret;
 }
 LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+LPCSTR RedirectDriveRoot(LPCSTR path, LPSTR to, size_t max_len, BOOL silence);
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+void UnredirectSystemDir(LPSTR buf, SIZE_T buf_len);
 /**********************************************************************
  *          LoadModule      (KERNEL.45)
  */
 HINSTANCE16 WINAPI LoadModule16( LPCSTR name, LPVOID paramBlock )
 {
     BOOL lib_only = !paramBlock || (paramBlock == (LPVOID)-1);
+    if (!lib_only) WarnLegacyInstaller(name);
     LOADPARAMS16 *params;
     HMODULE16 hModule;
     NE_MODULE *pModule;
@@ -1387,7 +1401,9 @@ HINSTANCE16 WINAPI LoadModule16( LPCSTR name, LPVOID paramBlock )
     if (name == NULL) return 0;
 
     char buf[MAX_PATH];
+    char buf2[MAX_PATH];
     name = RedirectSystemDir(name, buf, MAX_PATH);
+    name = RedirectDriveRoot(name, buf2, MAX_PATH, TRUE);
     TRACE("name %s, paramBlock %p\n", name, paramBlock);
 
     /* Load module */
@@ -1859,6 +1875,11 @@ INT16 WINAPI GetModuleFileName16( HINSTANCE16 hModule, LPSTR lpFileName,
     lstrcpynA( lpFileName, NE_MODULE_NAME(pModule), nSize );
     if (pModule->ne_expver < 0x400)
         GetShortPathNameA(NE_MODULE_NAME(pModule), lpFileName, nSize);
+    if (nSize > 0)
+    {
+        UnredirectSystemDir(lpFileName, nSize);
+        UnredirectDriveRoot(lpFileName, nSize);
+    }
     TRACE("%04x -> '%s'\n", hModule, lpFileName );
     return strlen(lpFileName);
 }
@@ -1970,6 +1991,23 @@ HINSTANCE16 WINAPI WinExec16(LPCSTR lpCmdLine, UINT16 nCmdShow)
     {
         cmdline = HeapAlloc(GetProcessHeap(), 0, 2);
         cmdline[0] = cmdline[1] = 0;
+    }
+
+    {
+        /* Resolve a virtual-drive program name before the host search, so that
+         * WinExec("C:\APP\A.EXE") finds <otvdm>\C\APP\A.EXE. */
+        char redir_buf[MAX_PATH];
+        LPCSTR mapped = RedirectVirtualDrivePath(name, redir_buf, MAX_PATH);
+        if (mapped != name)
+        {
+            LPSTR heapname = HeapAlloc(GetProcessHeap(), 0, strlen(mapped) + 1);
+            if (heapname)
+            {
+                strcpy(heapname, mapped);
+                if (name != lpCmdLine) HeapFree(GetProcessHeap(), 0, name);
+                name = heapname;
+            }
+        }
     }
 
     TRACE("name: '%s', cmdline: '%.*s'\n", name, cmdline[0], &cmdline[1]);

@@ -839,6 +839,38 @@ int entry_point( int argc, char *argv[] )
     }
     else
     {
+        /* A virtual-drive path on the command line (C:\APP\SETUP.EXE) has to
+         * be resolved to <otvdm>\<letter>\APP\SETUP.EXE before the host search.
+         * The mapping is opt-in ([otvdm] VirtualDrive must be set), so a plain
+         * deployment keeps the normal command-line semantics. virt[] must stay
+         * in this block: SearchPathA below receives argv[1] = virt. */
+        char virt[MAX_PATH];
+        char vdrive[8];
+        if (argv[1][0] && argv[1][1] == ':' && (argv[1][2] == '\\' || argv[1][2] == '/') &&
+            krnl386_get_config_string("otvdm", "VirtualDrive", "", vdrive, sizeof(vdrive)) &&
+            vdrive[0])
+        {
+            char letter = vdrive[0];
+            if (letter >= 'a' && letter <= 'z') letter -= 'a' - 'A';
+            if (letter >= 'A' && letter <= 'Z' &&
+                (argv[1][0] == letter || argv[1][0] == letter - 'A' + 'a'))
+            {
+                char exedir[MAX_PATH];
+                GetModuleFileNameA(NULL, exedir, MAX_PATH);
+                char *slash = strrchr(exedir, '\\');
+                if (slash)
+                {
+                    *slash = 0;
+                    GetShortPathNameA(exedir, exedir, sizeof(exedir));
+                    if (strlen(exedir) + 3 + strlen(argv[1] + 3) < sizeof(virt))
+                    {
+                        snprintf(virt, sizeof(virt), "%s\\%c\\%s", exedir, letter, argv[1] + 3);
+                        if (GetFileAttributesA(virt) != INVALID_FILE_ATTRIBUTES)
+                            argv[1] = virt;
+                    }
+                }
+            }
+        }
         if (!SearchPathA( ".", argv[1], ".exe", sizeof(buffer), buffer, NULL ) &&
             !SearchPathA( ".", argv[1], ".com", sizeof(buffer), buffer, NULL ) &&
             !SearchPathA( NULL, argv[1], ".exe", sizeof(buffer), buffer, NULL ) &&

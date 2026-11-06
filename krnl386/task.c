@@ -1954,6 +1954,11 @@ static BOOL env_var_limit(const char *v)
     return FALSE;
 }
 
+LPCSTR RedirectSystemDir(LPCSTR path, LPSTR to, size_t max_len);
+LPCSTR RedirectDriveRoot(LPCSTR path, LPSTR to, size_t max_len, BOOL silence);
+void UnredirectSystemDir(LPSTR buf, SIZE_T buf_len);
+void UnredirectDriveRoot(LPSTR buf, SIZE_T buf_len);
+
 static void parse_autoexec()
 {
     BOOL pathfound = FALSE;
@@ -2178,11 +2183,20 @@ void switch_directory(struct kernel_thread_data *thread_data)
                 GetShortPathNameA(task_old_data->curdir_buf, task_old_data->curdir_buf, task_old_data->curdir_len);
                 strcpy(task_old_data->true_curdir, task_old_data->curdir_buf);
                 TDB *old = ((TDB*)GlobalLock16(task_old_data->htask16));
-                GetShortPathNameA(task_old_data->true_curdir + 2, old->curdir, sizeof(old->curdir));
+                if (old)
+                {
+                    /* The TDB keeps the 16-bit view of the directory. */
+                    char virtcur[MAX_PATH];
+                    strcpy(virtcur, task_old_data->true_curdir);
+                    UnredirectSystemDir(virtcur, sizeof(virtcur));
+                    UnredirectDriveRoot(virtcur, sizeof(virtcur));
+                    lstrcpynA(old->curdir, virtcur + 2, sizeof(old->curdir));
+                }
                 GetShortPathNameA(task_old_data->true_curdir, task_old_data->true_curdir, task_old_data->curdir_len);
                 if (!thread_data->htask16)
                     old = NULL;
-                old->curdrive = 0x80 | (task_old_data->true_curdir[0] - 'A');
+                if (old)
+                    old->curdrive = 0x80 | (task_old_data->true_curdir[0] - 'A');
                 GlobalUnlock16(task_old_data->htask16);
                 /*
                 curdir_buf -> new curdir

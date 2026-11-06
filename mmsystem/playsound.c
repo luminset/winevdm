@@ -552,11 +552,16 @@ static BOOL MULTIMEDIA_PlaySound(const void* pszSound, HMODULE hmod, DWORD fdwSo
     return FALSE;
 }
 
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
 /**************************************************************************
  * 				PlaySoundA		[WINMM.@]
  */
 BOOL16 WINAPI PlaySound16(LPCSTR pszSoundA, HMODULE16 hmod, DWORD fdwSound)
 {
+    char redir_buf[MAX_PATH];
+    if (pszSoundA && !(fdwSound & (SND_ALIAS | SND_ALIAS_ID | SND_RESOURCE | SND_MEMORY)))
+        pszSoundA = RedirectVirtualDrivePath(pszSoundA, redir_buf, MAX_PATH);
     return MULTIMEDIA_PlaySound(pszSoundA, hmod, fdwSound, FALSE);
 }
 
@@ -565,7 +570,10 @@ BOOL16 WINAPI PlaySound16(LPCSTR pszSoundA, HMODULE16 hmod, DWORD fdwSound)
  */
 BOOL16 WINAPI sndPlaySound16(LPCSTR pszSoundA, UINT16 uFlags)
 {
+    char redir_buf[MAX_PATH];
     uFlags &= SND_RESOURCE|SND_ALIAS_ID|SND_FILENAME|SND_ASYNC|SND_LOOP|SND_MEMORY|SND_NODEFAULT|SND_NOSTOP|SND_SYNC;
+    if (pszSoundA && !(uFlags & (SND_ALIAS | SND_ALIAS_ID | SND_RESOURCE | SND_MEMORY)))
+        pszSoundA = RedirectVirtualDrivePath(pszSoundA, redir_buf, MAX_PATH);
     return MULTIMEDIA_PlaySound(pszSoundA, 0, uFlags, FALSE);
 }
 

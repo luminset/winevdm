@@ -724,6 +724,15 @@ static BOOL INT21_FillDrivePB( BYTE drive )
  * - function 0x47
  * - subfunction 0x47 of function 0x71
  */
+/* Map a 16-bit DOS path through the Windows-directory redirect and the virtual
+ * drive. The two private buffers must stay alive while the caller uses the
+ * result; the returned pointer is either the original string or one of them. */
+static LPCSTR INT21_redirect_path( LPCSTR path, LPSTR b1, LPSTR b2 )
+{
+    LPCSTR p = RedirectSystemDir( path, b1, MAX_PATH );
+    return RedirectDriveRoot( p, b2, MAX_PATH, TRUE );
+}
+
 static BOOL INT21_GetCurrentDirectory( CONTEXT *context, BOOL islong )
 {
     char  *buffer = CTX_SEG_OFF_TO_LIN(context, context->SegDs, context->Esi);
@@ -784,6 +793,24 @@ static BOOL INT21_GetCurrentDirectory( CONTEXT *context, BOOL islong )
     }
 
     /*
+     * Convert the full path into an OEM string first: the unredirect needs the
+     * drive letter, which the 16-bit result deliberately omits.
+     */
+
+    if (!WideCharToMultiByte(CP_OEMCP, 0, ptr, -1, pathA,
+                             MAX_PATH, NULL, NULL))
+    {
+        WARN( "Cannot convert path!\n" );
+        SetLastError(ERROR_NETWORK_BUSY); /* Internal Wine error. */
+        return FALSE;
+    }
+
+    /* Report the 16-bit view (virtual drive / virtual Windows directory),
+     * never the real <otvdm>\... path. */
+    UnredirectSystemDir( pathA, sizeof(pathA) );
+    UnredirectDriveRoot( pathA, sizeof(pathA) );
+
+    /*
      * The returned pathname does not include 
      * the drive letter, colon or leading backslash.
      */
@@ -797,29 +824,16 @@ static BOOL INT21_GetCurrentDirectory( CONTEXT *context, BOOL islong )
         SetLastError(ERROR_NETWORK_BUSY); /* Internal Wine error. */
         return FALSE;
     }
-    else if (!ptr[0] || ptr[1] != ':' || ptr[2] != '\\')
+    else if (!pathA[0] || pathA[1] != ':' || pathA[2] != '\\')
     {
-        WARN( "Path is neither UNC nor DOS path: %s\n",
-              wine_dbgstr_w(ptr) );
+        WARN( "Path is neither UNC nor DOS path: %s\n", pathA );
         SetLastError(ERROR_NETWORK_BUSY); /* Internal Wine error. */
         return FALSE;
     }
     else
     {
         /* Remove drive letter, colon and leading backslash. */
-        ptr += 3;
-    }
-
-    /*
-     * Convert into OEM string.
-     */
-    
-    if (!WideCharToMultiByte(CP_OEMCP, 0, ptr, -1, pathA, 
-                             MAX_PATH, NULL, NULL))
-    {
-        WARN( "Cannot convert path!\n" );
-        SetLastError(ERROR_NETWORK_BUSY); /* Internal Wine error. */
-        return FALSE;
+        memmove( pathA, pathA + 3, strlen(pathA + 3) + 1 );
     }
 
     /*
@@ -859,8 +873,12 @@ static BOOL INT21_SetCurrentDirectory( CONTEXT *context )
     char *dirA = CTX_SEG_OFF_TO_LIN(context, context->SegDs, context->Edx);
     BYTE  drive = INT21_GetCurrentDrive();
     BOOL  result;
+    char redir_buf1[MAX_PATH];
+    char redir_buf2[MAX_PATH];
 
     TRACE( "SET CURRENT DIRECTORY %s\n", dirA );
+
+    dirA = (char *)INT21_redirect_path( dirA, redir_buf1, redir_buf2 );
 
     MultiByteToWideChar(CP_OEMCP, 0, dirA, -1, dirW1, MAX_PATH);
     if (!GetFullPathNameW( dirW1, MAX_PATH, dirW, NULL )) return FALSE;
@@ -876,7 +894,20 @@ static BOOL INT21_SetCurrentDirectory( CONTEXT *context )
     env_var[1] = dirW[0];
     env_var[2] = ':';
     env_var[3] = 0;
-    result = SetEnvironmentVariableW( env_var, dirW );
+    /* Keep the 16-bit view in the per-drive variable: 16-bit callers read it
+     * back through INT21_GetCurrentDirectory, and the real <otvdm>\... path
+     * must not be exposed through the environment. */
+    {
+        char virtA[MAX_PATH];
+        WCHAR virtW[MAX_PATH];
+        if (!WideCharToMultiByte(CP_OEMCP, 0, dirW, -1, virtA, sizeof(virtA), NULL, NULL))
+            return FALSE;
+        UnredirectSystemDir(virtA, sizeof(virtA));
+        UnredirectDriveRoot(virtA, sizeof(virtA));
+        if (!MultiByteToWideChar(CP_OEMCP, 0, virtA, -1, virtW, MAX_PATH))
+            return FALSE;
+        result = SetEnvironmentVariableW( env_var, virtW );
+    }
 
     /* only set current directory if on the current drive */
     if (result && (toupperW(dirW[0]) - 'A' == drive)) result = SetCurrentDirectoryW( dirW );
@@ -1131,7 +1162,7 @@ static BOOL INT21_CreateFile( CONTEXT *context,
      */
     if (winMode == CREATE_NEW || winMode == CREATE_ALWAYS)
     {
-        pathA = RedirectDriveRoot(pathA, redir_buf, MAX_PATH, FALSE);
+        pathA = RedirectDriveRoot(pathA, redir_buf, MAX_PATH, TRUE);
     }
     retry:
     MultiByteToWideChar(CP_OEMCP, 0, pathA, -1, pathW, MAX_PATH);
@@ -1159,7 +1190,7 @@ static BOOL INT21_CreateFile( CONTEXT *context,
         {
             if (retry)
                 return FALSE;
-            pathA = RedirectDriveRoot(pathA, redir_buf, MAX_PATH, FALSE);
+            pathA = RedirectDriveRoot(pathA, redir_buf, MAX_PATH, TRUE);
             retry = TRUE;
             goto retry;
         }
@@ -1913,8 +1944,12 @@ static BOOL INT21_CreateDirectory( CONTEXT *context )
     char *dirA = CTX_SEG_OFF_TO_LIN(context,
                                     context->SegDs, 
                                     context->Edx);
+    char redir_buf1[MAX_PATH];
+    char redir_buf2[MAX_PATH];
 
     TRACE( "CREATE DIRECTORY %s\n", dirA );
+
+    dirA = (char *)INT21_redirect_path( dirA, redir_buf1, redir_buf2 );
 
     MultiByteToWideChar(CP_OEMCP, 0, dirA, -1, dirW, MAX_PATH);
 
@@ -2086,8 +2121,9 @@ static BOOL INT21_FileAttributes( CONTEXT *context,
     char *fileA = CTX_SEG_OFF_TO_LIN(context, 
                                      context->SegDs, 
                                      context->Edx);
-	CHAR filebuf[MAX_PATH];
-	fileA = RedirectSystemDir(fileA, filebuf, MAX_PATH);
+	CHAR filebuf1[MAX_PATH];
+	CHAR filebuf2[MAX_PATH];
+	fileA = (char *)INT21_redirect_path(fileA, filebuf1, filebuf2);
     HANDLE   handle;
     BOOL     status;
     FILETIME filetime;
@@ -3457,8 +3493,14 @@ static BOOL INT21_RenameFile( CONTEXT *context )
                                      context->SegDs,context->Edx);
     char *toA = CTX_SEG_OFF_TO_LIN(context, 
                                    context->SegEs,context->Edi);
+    char redir_buf1[MAX_PATH];
+    char redir_buf2[MAX_PATH];
+    char redir_buf3[MAX_PATH];
+    char redir_buf4[MAX_PATH];
 
     TRACE( "RENAME FILE %s to %s\n", fromA, toA );
+    fromA = (char *)INT21_redirect_path( fromA, redir_buf1, redir_buf2 );
+    toA = (char *)INT21_redirect_path( toA, redir_buf3, redir_buf4 );
     MultiByteToWideChar(CP_OEMCP, 0, fromA, -1, fromW, MAX_PATH);
     MultiByteToWideChar(CP_OEMCP, 0, toA, -1, toW, MAX_PATH);
 
@@ -3902,11 +3944,16 @@ static BOOL INT21_FindFirst( CONTEXT *context )
 {
     WCHAR *p, *q;
     const char *path;
+    const char *path_orig;
     FINDFILE_DTA *dta = (FINDFILE_DTA *)INT21_GetCurrentDTA(context);
     WCHAR maskW[12], pathW[MAX_PATH];
     static const WCHAR wildcardW[] = {'*','.','*',0};
+    char redir_buf1[MAX_PATH];
+    char redir_buf2[MAX_PATH];
 
     path = CTX_SEG_OFF_TO_LIN(context, context->SegDs, context->Edx);
+    path_orig = path;
+    path = INT21_redirect_path(path, redir_buf1, redir_buf2);
     MultiByteToWideChar(CP_OEMCP, 0, path, -1, pathW, MAX_PATH);
 
     p = strrchrW( pathW, '\\');
@@ -3937,7 +3984,13 @@ static BOOL INT21_FindFirst( CONTEXT *context )
     /* we must have a fully qualified file name in dta->fullPath
      * (we could have a UNC path, but this would lead to some errors later on)
      */
-    dta->drive = toupperW(dta->fullPath[0]) - 'A';
+    /* The search path is a real host path now, but the DTA must report the
+     * drive the 16-bit program asked for. */
+    if (path_orig[0] && path_orig[1] == ':')
+        dta->drive = (path_orig[0] >= 'a' && path_orig[0] <= 'z')
+                     ? path_orig[0] - 'a' : path_orig[0] - 'A';
+    else
+        dta->drive = toupperW(dta->fullPath[0]) - 'A';
     dta->count = 0;
     dta->search_attr = CL_reg(context);
     return TRUE;
@@ -4897,8 +4950,12 @@ void WINAPI DOSVM_Int21Handler( CONTEXT *context )
             WCHAR dirW[MAX_PATH];
             char *dirA = CTX_SEG_OFF_TO_LIN(context,
                                             context->SegDs, context->Edx);
+            char redir_buf1[MAX_PATH];
+            char redir_buf2[MAX_PATH];
 
             TRACE( "REMOVE DIRECTORY %s\n", dirA );
+
+            dirA = (char *)INT21_redirect_path( dirA, redir_buf1, redir_buf2 );
 
             MultiByteToWideChar(CP_OEMCP, 0, dirA, -1, dirW, MAX_PATH);
 
@@ -5037,7 +5094,7 @@ void WINAPI DOSVM_Int21Handler( CONTEXT *context )
                 if (!count)
                 {
                     fileA = RedirectSystemDir(fileA, buf, MAX_PATH);
-                    fileA = RedirectDriveRoot(fileA, buf, MAX_PATH, FALSE);
+                    fileA = RedirectDriveRoot(fileA, buf, MAX_PATH, TRUE);
                     count = 1;
                     goto retry;
                 }

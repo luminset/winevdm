@@ -113,6 +113,8 @@ LONG WINAPI LZCopy16( HFILE16 src, HFILE16 dest )
 }
 
 
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
 HFILE WINAPI LZOpenFile32( LPSTR fn, LPOFSTRUCT ofs, WORD mode, BOOL *lzhandle );
 /***********************************************************************
  *           LZOpenFile   (LZEXPAND.2)
@@ -120,7 +122,10 @@ HFILE WINAPI LZOpenFile32( LPSTR fn, LPOFSTRUCT ofs, WORD mode, BOOL *lzhandle )
 HFILE16 WINAPI LZOpenFile16(LPSTR fn, LPOFSTRUCT ofs, UINT16 mode)
 {
 	BOOL lzhandle = FALSE;
-	HFILE hfret = LZOpenFile32(fn, ofs, mode, &lzhandle);
+	HFILE hfret;
+	char redir_buf[MAX_PATH];
+	if (fn) fn = (LPSTR)RedirectVirtualDrivePath(fn, redir_buf, MAX_PATH);
+	hfret = LZOpenFile32(fn, ofs, mode, &lzhandle);
 	/* return errors and LZ handles unmodified */
 	if ((INT)hfret < 0) return hfret;
 	if (lzhandle) return hfret;

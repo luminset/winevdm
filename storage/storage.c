@@ -50,6 +50,16 @@ NTSYSAPI BOOLEAN   WINAPI RtlCreateUnicodeStringFromAsciiz(PUNICODE_STRING, LPCS
 
 WINE_DEFAULT_DEBUG_CHANNEL(ole);
 #include "../ole2/ifs.h"
+
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
+/* Compound files opened by a 16-bit program follow the virtual drive too. */
+static LPCSTR storage_map_name(LPCSTR name, LPSTR buf)
+{
+    if (!name) return name;
+    return RedirectVirtualDrivePath(name, buf, MAX_PATH);
+}
+
 /******************************************************************************
  *		StgCreateDocFileA	[STORAGE.1]
  */
@@ -57,7 +67,8 @@ HRESULT WINAPI StgCreateDocFile16(
 	LPCOLESTR16 pwcsName,DWORD grfMode,DWORD reserved,/*IStorage16 * */SEGPTR *ppstgOpen
 ) {
     LPSTORAGE stg;
-    LPWSTR w = strdupAtoW(pwcsName);
+    char redir_buf[MAX_PATH];
+    LPWSTR w = strdupAtoW(storage_map_name(pwcsName, redir_buf));
     HRESULT result;
 	TRACE("(%s,0x%08x,0x%08x,%p)\n",
 		pwcsName,grfMode,reserved,ppstgOpen
@@ -90,7 +101,8 @@ HRESULT WINAPI StgOpenStorage16(
     SNB16 snbExclude, DWORD reserved, /* IStorage16 * */SEGPTR *ppstgOpen
 ) {
     LPSTORAGE stg;
-    LPWSTR w = strdupAtoW(pwcsName);
+    char redir_buf[MAX_PATH];
+    LPWSTR w = strdupAtoW(storage_map_name(pwcsName, redir_buf));
     HRESULT result;
     IStorage *pstg;
 	TRACE("(%s,%p,0x%08x,%p,%d,%p)\n",
@@ -109,8 +121,9 @@ HRESULT WINAPI StgOpenStorage16(
 HRESULT WINAPI StgIsStorageFile16(LPCOLESTR16 fn) {
 	UNICODE_STRING strW;
 	HRESULT ret;
+	char redir_buf[MAX_PATH];
 
-	RtlCreateUnicodeStringFromAsciiz(&strW, fn);
+	RtlCreateUnicodeStringFromAsciiz(&strW, storage_map_name(fn, redir_buf));
 	ret = StgIsStorageFile( strW.Buffer );
 	RtlFreeUnicodeString( &strW );
 
@@ -2172,8 +2185,9 @@ HRESULT WINAPI StgCreateDocFile16(
 HRESULT WINAPI StgIsStorageFile16(LPCOLESTR16 fn) {
 	UNICODE_STRING strW;
 	HRESULT ret;
+	char redir_buf[MAX_PATH];
 
-	RtlCreateUnicodeStringFromAsciiz(&strW, fn);
+	RtlCreateUnicodeStringFromAsciiz(&strW, storage_map_name(fn, redir_buf));
 	ret = StgIsStorageFile( strW.Buffer );
 	RtlFreeUnicodeString( &strW );
 

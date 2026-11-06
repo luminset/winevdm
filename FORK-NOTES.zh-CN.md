@@ -5,10 +5,10 @@
 
 ## 一、这个 fork 是什么
 
-- **上游基线**：`otya128/winevdm` 的 `master` @ `a31d1c2`（2026-09-22）
-- **我们的工作分支**：`nohafix` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ `-O1` 构建守卫**
-- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）。**上一版 `patched-o1-midip1-20261016` 保留**——它的可复现性说明见 §三.4。
-- **DOS 支持**：单独的扩展包 **`ext-dos-20261016`**（`otvdm-ext-dos-20261016.zip`，3,057,248 B）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd` 装上，双击 `uninstall-dos.cmd` 连自己一起撤干净。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
+- **上游基线**：`otya128/winevdm` 的 `master` @ `b88d7f87`（2026-11 同步：包含上游 5 个提交 / 2 个 PR 合并，已合进 `nohafix`；上一个基线是 `a31d1c2`）
+- **我们的工作分支**：`nohafix` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ 按需开启的虚拟 C 根 + `-O1` 构建守卫**
+- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）及其上一版 `patched-o1-midip1-20261016`——两版的可复现性说明见 §三.4。**虚拟 C 根的 `vcroot` 版暂未发布**（尝试性修改，见 §三.6 与 §4 末尾）。
+- **DOS 支持**：单独的扩展包 **`ext-dos-20261105`**（`otvdm-ext-dos-20261105.zip`，**3,058,623 B**）：解压进 otvdm 部署目录 → 双击 `install-dos.cmd`；安装时按系统位数**直接指向** `msdos\x64\msdos.exe` 或 `msdos\x86\msdos.exe`，**不再复制根 `msdos.exe`**；双击 `uninstall-dos.cmd` 连自己一起撤干净。旧包 `ext-dos-20261016` 保留。主包与它互不依赖，**本仓库里没有它的任何文件**（只加了几行 `.gitignore` 防止将来误提交）
 - `master` 保持为**上游纯镜像**，可随时同步；我们的东西都在 `nohafix` 上；**对上游暂不提交**（2026-10-17：PR #1627 已关闭、通道分支已删除，只在确实必要时重建，见 §五）
 
 ### 现成方案调研（"能用现成的就不自研"）
@@ -97,6 +97,7 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 
 ### 4. 预编译包
 
+- **`patched-o1-vcroot-20261106`（2026-11-06，仅本地构建，未发布）**：把虚拟 C 根从"默认开启"改成"默认关闭、显式开启"之后的构建，含审计修复的一组路径映射缺陷（见 §三.6）。**这一版属尝试性修改，不适合作为正式包发布**：映射的有效性尚未充分验证，且 **16/32 位混合安装器会绕过映射而失效**，所以**没有**上传到 Releases；正式包仍是 `patched-o1-midip2-20261016`。本地构建的验证结果：157 个条目 = 156 个内容文件 + `SHA256SUMS.txt`、**不含 DOS 载荷**（DOS 走扩展包 `ext-dos-20261105`）；53 个随包二进制与同提交、不同目录的两次干净重建**逐字节一致**（可复现）；全部 139 个 PE 的 `EB FE` 自跳转扫描 **0 处**；包内 `SHA256SUMS.txt` 156 行逐行自校验通过。
 - Releases 页的 `patched-o1-midip1-20261016`：MinGW-W64 i686 `-O1` Release、平铺布局、带运行时 DLL，解压即用（解压后得到一层 `otvdm-patched-o1-midip1-20261016\` 目录）；157 个条目 = 156 个内容文件 + `SHA256SUMS.txt`，**2,445,266 B**（sha256 `6d2ccc1a…`），**不含 DOS 载荷**（DOS 走扩展包 `ext-dos-20261016`）。
 - 这一版相对上一版**只重编了 `mmsystem.dll16` 一个模块**，改动三处：① **`midiStreamOpen16` 的设备号符号扩展**——16 位侧的 MIDI 映射器设备号是 WORD `0xFFFF`，原代码零扩展成 `0x0000FFFF`，宿主 winmm 判为非法设备号（`MMSYSERR_BADDEVICEID`）→ **任何请求映射器的流式打开都会被拒**；现按 `(INT16)` 符号扩展，与本来正确的 `midiOutOpen16` 一致。② **新增 `otvdm.ini` 的 `[otvdm] midiconfig=`**——逐部署选择宿主 MIDI 输出设备（等价 DOSBox-X 的同名配置），值可以是设备序号或设备名子串，**只重定向「映射器」请求**，值非法时静默回退，不写这一行 = 改版前行为。③ `midiStreamOut16` 的 `MHDR_PREPARED` 加固。156 个内容文件里 **153 个与上一版逐字节相同**。
 - **源码状态照实说**：改动 ①②③ 的源码**现在都已在 `nohafix` 分支里**（①② 见提交 `eb221be7`，③ 见 `32bf26b1`；`git log -S midiconfig` 现在有命中）。发布当时它们还只存在于工作区，所以这一版的 `mmsystem.dll16` 领先于 tag 所指的提交。
@@ -122,6 +123,23 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 - 定向投递窗口消息（`e2e\winclick.cs` + `mplayer-probe.ps1`，投给单个 HWND、不用 `SendKeys`）保留为工具，但它**是否真能启动 MPLAYER 播放尚未验证**（当时无法与用户的手动点击区分）。
 - **已知外观差异（不影响发声）**：走默认宿主路径时标题显示 `(playing)`；强制 `midiseq=internal` 时标题的状态字为空（`Media Player - CANYON.MID ()`）。
 
+### 6. 虚拟 C 根（尝试性修改；默认关闭，2026-11-06 审计后重做，未发布）
+
+- **状态：尝试性修改，未随任何正式包发布。** 映射的有效性尚未充分验证，且 **16/32 位混合安装器（16 位启动器解包并运行 32 位安装引擎）会绕过映射而失效**。因此这一版只留在源码里、默认关闭，等验证到位再考虑发布；正式包仍是 `patched-o1-midip2-20261016`。
+
+- **是什么**：把 16 位程序看到的某个盘（默认 `C:`）映射到 otvdm 部署目录下：`C:\APP` → `<otvdm>\C\APP`；`C:\WINDOWS` 仍走 `WINDIR` 重定向（`<otvdm>\WINDOWS`）。开关是 `otvdm.ini` 的 `[otvdm] VirtualDrive=<盘符>`。
+- **默认关闭（审计结论）**：第一版是默认开启，审计发现它会**静默改变升级用户的行为** —— 已经装在真实 `C:` 上的程序，`C:\GAMES\...` 会被解析到不存在的 `<otvdm>\C\GAMES\...`。现在 `VirtualDrive` 缺省或空值 = **完全不映射**（行为与加这个功能之前一致），只有显式写了盘符才启用；`legacy installer` / `32-bit child` 两类告警也只在显式启用时弹。
+- **注册表隔离同样改回默认关闭**：`EnableRegistryRedirection` 代码默认 FALSE，发布的 `otvdm.ini` 里这一行是注释状态。升级用户读写真实 `HKCU/HKLM`，与旧版一致；需要隔离的用户自己取消注释（ini 注释里写明了作用与影响）。
+- **审计中修掉的实现缺陷**（都已进本版源码与二进制）：
+  - `WINDIR` 写成绝对路径或 `\` 开头时，映射基准被算成 `C:\`，整个重定向静默失效 → 基准改为“`otvdm.exe` 所在目录”（取短路径形式、去掉尾反斜杠）；`WINDIR` 本身是绝对路径时按“使用真实 Windows 目录”处理（已写进 `otvdm.ini` 注释）。
+  - `otvdm\winevdm.c` 命令行映射里 `virt` 缓冲在 `else` 块内声明、`argv[1]` 在块外使用（悬垂指针）→ 提到块外，并改用配置里的盘符（大小写都认）。
+  - 配置文件 API（`...ProfileString`）、`GetTempFileName16`、`SetCurrentDirectory16` / `GetCurrentDirectory16`、INT 21h 的目录/查找/属性/改名/删除调用：补齐映射与反映射 —— 既不把真实部署路径回吐给 16 位程序（避免信息泄漏），也让程序自己记下的路径可随目录搬移。
+  - 跨模块补映射：`MCI_OPEN` 文件名、`mmioOpen`、`PlaySound`、`ShellExecute`（文件 + 工作目录）、`LZOpenFile`、复合文档 `Stg*`、`WinExec` / `LoadModule` 的程序名、DOS `MZ_Exec`、winoldap 启动 DOS 程序。
+  - 目录视图一致性（第二轮复核补的）：DOS `INT21 0x47` 原先**先剥盘符再反映射**，剥完就匹配不到 `<otvdm>\C\...`，会把真实部署路径回报给 16 位程序 → 改为先对**完整路径**反映射再剥盘符；每个盘符的环境变量 `=X:` 改存**虚拟视图**（`GetEnvironmentVariable` 不再泄漏真实路径）；`task.c` 任务切换的 TDB 目录同样先反映射，并补上 `old == NULL` 保护（上游遗留的空指针风险）。
+  - 前缀误判：`RedirectSystemDir()` 原来用 `PathCommonPrefixA` 判"是否在 Windows 目录里"，会把 `C:\WINDOWSX` 当成 `C:\WINDOWS` 并错映射到 `<otvdm>\WINDOWS\X` → 改用自写的 `path_has_dir_prefix()`（要求前缀后是路径分隔符或结尾），三处调用一并替换。
+- **覆盖边界（照实说）**：16 位程序拉起的 32 位/原生子进程（`setup.exe`、私有安装引擎）不受控；`GetOpenFileName` 等文件对话框显示真实路径；`mciSendString` 命令串里拼出的文件名不映射；AVIFile 的 `AVIFileOpen` 在 spec 里直接转发 32 位实现，本版未加映射。
+- **验证**：见 §四（发布包上做了默认关闭 / 显式开启 / 命令行 `C:\...` / 自定义盘符四类启动验证）。
+
 ## 四、验证到什么程度（请不要过度宣称）
 
 - ✅ **16 个公版 Windows 3.11 中文附件**：15 个正常出窗口（9 秒墙钟内 CPU 均 < 1.3 秒）；与"未打补丁的同 `-O1` 构建"和"官方 v0.9.0（MSVC）"逐项 A/B 对比，**无回归**。`REGEDIT.EXE` 三个版本都不出窗口，属既有问题。
@@ -130,9 +148,17 @@ find . -path '*krnl386.dir/flags.make' | head -1 | xargs grep 'C_FLAGS = '
 - ⚠️ **第二轮 MIDI 改动（`midiStreamOpen16` 符号扩展 + `[otvdm] midiconfig=`）**：源码级分析 + **宿主侧调用实测**（32 位程序直接调 winmm：`midiStreamOpen(0xFFFFFFFF)` 成功、`(0x0000FFFF)` 返回 `MMSYSERR_BADDEVICEID`(2)）+ 16 程序 A/B 回归矩阵三轮（默认 / `midiconfig=0` / `midiconfig=99`）与基线逐行一致；**没有正向听测** —— 构建机只有一块宿主 MIDI 设备、也没有会调 `midiStreamOpen` 的 Win16 程序，所以「换设备是否真的换音色」要在装了第三方 MIDI 驱动的目标机上确认。**这两处源码现已合流到 `nohafix`（提交 `eb221be7`），但已发布那一版的字节无法复现**（详见 §三.4 的"可复现性照实说"）。
 - ✅ **第三轮：16 位 MIDI 的兜底发声通路（内置 MCI 序列器，见 §三.5）**：宿主侧实测（`midiOutGetNumDevs()` = 1、设备 0 为 `SWSYNTH`、open / 短消息 / close 全部返回 0）；MCI 命令接口双向对照（默认端口返回 `MCIERR_SEQ_PORT_NONEXISTENT`(338)、0 ms 就结束，改指系统默认端口后返回 0、按 2000 ms 播完）；强制内置时逐条检查**每个音是否被设备接受**（0 条告警）；**真实 16 位端到端**：Win3.1 `MPLAYER.EXE` 打开 `.MID` 解析出 1 轨 / 480 ppq / 33861 字节、长度 2:52、播放位置持续推进，`.RMI` 同样读出 172000 ms；默认路径 A/B **零回归**（宿主设备号 `0001`，内置零调用）；生命周期 37 项 + 扩展名 17 项 + 宿主 MIDI 接受性 13 项全部通过；发布用构建可逐字节复现；**并在系统默认渲染端点的电平表上实测到真实信号（峰值 -2.7 dBFS，含阴性/阳性对照），即"确实发声"这一步已用软件测量，不再只靠人耳；进一步在真实 16 位程序（MPLAYER，走内置序列器 `0xF000`）播放时同时测到连续 16 秒、峰值 -3.8 dBFS 的信号**。
 - ✅ **时钟动画（定时器路径）**：三个版本都在动（连续截图像素哈希互不相同）。
+- ✅ **第四轮：虚拟 C 根的重做与验证（2026-11-06 审计后，本地构建的包上实测；该包未发布）**：① 默认配置（`VirtualDrive` 注释状态）下 `otvdm.exe C:\APP\MIDIE100.EXE` → `winevdm: unable to exec ...: file not found`，**证明默认关闭、升级用户行为不变**；② 默认配置下用部署目录内的真实绝对路径启动 `MIDIE100.EXE`，正常出现两个 `otvdm.exe` 进程、无报错（非回归）；③ 显式 `VirtualDrive=C` 且程序放在 `<部署目录>\C\APP\` → `C:\APP\MIDIE100.EXE` 正常启动；④ 显式 `VirtualDrive=D` 且程序放在 `<部署目录>\D\APP\` → `D:\APP\MIDIE100.EXE` 正常启动（盘符可配）；⑤ 显式开启时用部署目录内真实绝对路径启动，正常且不被二次映射。构建/打包侧：两次不同目录干净重建的 **53** 个随包二进制逐字节一致、**139** 个 PE 的 `EB FE` 自跳转 **0 处**、`SHA256SUMS.txt` **156** 行全通过。**未重跑** 16 附件 A/B 回归矩阵（本轮改动集中在路径映射，回归面用上面的启动冒烟覆盖）；**未做**真实商业安装器的端到端验证。
 - ⚠️ **有 6 个提交只做了源码审查 + 编译 + 无回归验证，没有正向功能验证**：`cd17af3`（需 Morphman 一类复用 `MMCKINFO` 缓冲的程序）、`d8a0b84`（需 Borland 编译的程序）、`a6ce5a3`/`5a6a99f`（需带 `OFN_ENABLEHOOK` 的 16 位应用）、`c3861a8`（需 OLE 客户端）、`043df7c`（需故意传坏指针的程序）、`61bc422`（需直接调 `mmioSendMessage` 的程序）。**在此之前请勿对外宣称这些已修复。**
 - ⚠️ MPlayer 按空格播放不出声，在**三个版本上都复现**（含官方 v0.9.0）→ 上游/环境限制，不是本分支造成的。
 - ❌ 本仓库**不含**任何 Windows 3.x 附件二进制（微软版权），测试请自备安装介质。
+
+### legacy installer 启动提示（2026-11-06）
+
+- `KBMIDI.EXE` / `MIDIE100.EXE` 这类 16 位外壳的 Wise/InstallShield 老安装器，启动后会解包私有安装引擎；实测其安装目录 `C:\KBMIDI`、`C:\MIDIE100` 仍落到真实 C 盘，虚拟 C 根无法覆盖。
+- `krnl386/file.c` 新增 `WarnLegacyInstaller()`：在 `LoadModule16` 启动 EXE 前扫描 `GLBSInstall` / `GLBSSTUB` / `WiseMain` / `InstallShield` / `UNWISE` / `STUB.exe` / `_INS` 标记，**仅当 `[otvdm] VirtualDrive` 显式存在且非空时**弹一次 `otvdm - legacy installer` 警告，并写 `ERR` 日志；未显式配置时按系统集成方式运行，不弹提示。
+- 实测：显式配置 `VirtualDrive=C` 时 KBMIDI、MIDIE100 启动即弹警告；默认注释/缺省配置不弹；CALC.EXE 不弹。警告只提示，不改变真实写入；处理方式仍是沙箱/VM，或把安装路径改到 `<otvdm>\C\...`。
+- 另保留 `Warn32BitChild()`（`ne_module.c` / `dosexe.c` / `shell.c` / `winoldap.c` 的 32 位子进程入口），作为通用 32 位子进程的补充提示。
 
 ## 五、与上游的关系
 

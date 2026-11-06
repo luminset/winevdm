@@ -51,6 +51,9 @@
 #include "vga.h"
 #include "../toolhelp/toolhelp.h"
 
+void Warn32BitChild(LPCSTR filename, LPCSTR cmdline);
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
 WINE_DEFAULT_DEBUG_CHANNEL(module);
 
 static BOOL DOSVM_isdosexe;
@@ -458,8 +461,13 @@ BOOL MZ_Exec( CONTEXT *context, LPCSTR filename, BYTE func, LPVOID paramblk )
   STARTUPINFOA st;
   PROCESS_INFORMATION pe;
   HANDLE hFile;
+  char redir_buf[MAX_PATH];
 
   BOOL ret = FALSE;
+
+  /* A 16-bit program may exec a virtual-drive path; hand the host the real
+   * <otvdm>\<letter>\... file name. */
+  filename = RedirectVirtualDrivePath(filename, redir_buf, sizeof(redir_buf));
 
   if(!GetBinaryTypeA(filename, &binType))   /* determine what kind of binary this is */
   {
@@ -503,6 +511,7 @@ BOOL MZ_Exec( CONTEXT *context, LPCSTR filename, BYTE func, LPVOID paramblk )
 
       ZeroMemory (&st, sizeof(STARTUPINFOA));
       st.cb = sizeof(STARTUPINFOA);
+      Warn32BitChild(filename, fullCmdLine);
       ret = CreateProcessA (NULL, fullCmdLine, NULL, NULL, TRUE, 0, envblock, NULL, &st, &pe);
 
       /* wait for the app to finish and clean up PROCESS_INFORMATION handles */

@@ -303,6 +303,8 @@ static void     MMIO_SetSegmentedBuffer(struct mmio_thunk* thunk, SEGPTR ptr, BO
     thunk->segbuffer = ptr;
 }
 
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
 /**************************************************************************
  * 				mmioOpen       		[MMSYSTEM.1210]
  */
@@ -311,6 +313,11 @@ HMMIO16 WINAPI mmioOpen16(LPSTR szFileName, MMIOINFO16* lpmmioinfo16,
 {
     HMMIO 	ret;
     struct mmio_thunk*      thunk = NULL;
+    char redir_buf[MAX_PATH];
+
+    /* Follow the virtual drive for names handed to the host MMIO. */
+    if (szFileName)
+        szFileName = (LPSTR)RedirectVirtualDrivePath(szFileName, redir_buf, MAX_PATH);
 
     if (lpmmioinfo16) {
 	MMIOINFO	        mmioinfo;
