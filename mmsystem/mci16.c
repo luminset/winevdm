@@ -65,6 +65,8 @@
 #endif
 WINE_DEFAULT_DEBUG_CHANNEL(mmsys);
 
+LPCSTR RedirectVirtualDrivePath(LPCSTR path, LPSTR to, size_t max_len);
+
 char *WINAPI xlate_str_handle(const char *origstr, char *newstr)
 {
     if (!strncmp(origstr, "update ", 7))
@@ -503,7 +505,14 @@ static MMSYSTEM_MapType	MCI_MapMsg16To32W(WORD wMsg, DWORD dwFlags, DWORD_PTR* l
                 else
                     mop32w->lpstrDeviceType  = (LPWSTR) mop16->lpstrDeviceType;
                 if( ( dwFlags & ( MCI_OPEN_ELEMENT | MCI_OPEN_ELEMENT_ID)) == MCI_OPEN_ELEMENT)
-                    mop32w->lpstrElementName = MCI_strdupAtoW(MapSL(mop16->lpstrElementName));
+                {
+                    /* The element name is usually a wave/MIDI/AVI file: let it
+                     * follow the virtual drive like every other 16-bit path. */
+                    char redir_buf[MAX_PATH];
+                    LPCSTR elem = (LPCSTR)MapSL(mop16->lpstrElementName);
+                    elem = RedirectVirtualDrivePath(elem, redir_buf, MAX_PATH);
+                    mop32w->lpstrElementName = MCI_strdupAtoW(elem);
+                }
                 else
                     mop32w->lpstrElementName = (LPWSTR) mop16->lpstrElementName;
                 if( ( dwFlags &  MCI_OPEN_ALIAS))
@@ -1094,6 +1103,22 @@ DWORD WINAPI mciSendCommand16(UINT16 wDevID, UINT16 wMsg, DWORD dwParam1, DWORD 
     }
     if (wndwait)
         DestroyWindow(wndwait);
+    if (dwRet && (wMsg == MCI_OPEN || wMsg == MCI_PLAY))
+    {
+        /* MCI_OPEN and MCI_PLAY are the two commands that decide whether the user
+         * hears anything. A 16 bit game usually ignores the returned code, so a
+         * failure here would be indistinguishable from "no music in this build";
+         * report it instead of leaving the silence unexplained. Status and caps
+         * probes are deliberately left quiet - games fail those on purpose.
+         */
+        CHAR text[256];
+        text[0] = 0;
+        /* a FALSE return means the code is driver defined and the buffer was not
+         * filled, so never print it without looking */
+        mciGetErrorStringA(dwRet, text, sizeof(text));
+        ERR("(%04x, %s, %08lx) failed: 0x%08x %s\n", wDevID, MCI_MessageToString(wMsg),
+            dwParam1, dwRet, text[0] ? text : "(driver defined error code)");
+    }
     return dwRet;
 }
 

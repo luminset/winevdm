@@ -691,8 +691,11 @@ DWORD WINAPI auxOutMessage16(UINT16 uDeviceID, UINT16 uMessage, DWORD dw1, DWORD
 
 /* [otvdm] midiconfig=<index or part of a device name> in otvdm.ini picks which host
  * MIDI out device the 16 bit MIDI mapper (-1) lands on. Only the mapper is redirected,
- * so an app naming a device index explicitly is untouched, and winmm still chooses
- * when the key is absent or unusable.
+ * so an app naming a device index explicitly is untouched. A key that is absent leaves
+ * the choice to winmm; a key that names nothing that exists is an error, not a fallback:
+ * every Windows edition ships a default wavetable, so a miss can only mean a wrong
+ * deployment setting or a host MIDI path that someone redirected, and quietly opening
+ * the mapper anyway would turn that into unexplained silence.
  */
 static char midi_upper(char c)
 {
@@ -726,14 +729,19 @@ static UINT midi_index_from_string(const char *s)
     return *s ? (UINT)-1 : value;
 }
 
-static UINT midi_map_host_device(UINT dev_id)
+/* *err is set to MIDIERR_NODEVICE when midiconfig= names a device that is not there;
+ * the callers must then fail the open instead of falling back to the mapper.
+ */
+static UINT midi_map_host_device(UINT dev_id, UINT *err)
 {
     CHAR cfg[32];
     MIDIOUTCAPSA moc;
     UINT num, i, index;
 
+    *err = MMSYSERR_NOERROR;
     if (dev_id != (UINT)MIDI_MAPPER) return dev_id;
     if (!krnl386_get_config_string("otvdm", "midiconfig", "", cfg, sizeof(cfg))) return dev_id;
+    if (!cfg[0]) return dev_id;	/* midiconfig= with no value means "not configured" */
 
     num = midiOutGetNumDevs();
     index = midi_index_from_string(cfg);
@@ -744,7 +752,8 @@ static UINT midi_map_host_device(UINT dev_id)
             TRACE("midiconfig=%s -> host midi device %u\n", cfg, index);
             return index;
         }
-        WARN("midiconfig=%s: host has %u midi device(s), keeping the midi mapper\n", cfg, num);
+        *err = MIDIERR_NODEVICE;
+        ERR("midiconfig=%s: no such host midi device, the host has %u\n", cfg, num);
         return dev_id;
     }
 
@@ -757,7 +766,8 @@ static UINT midi_map_host_device(UINT dev_id)
             return i;
         }
     }
-    WARN("midiconfig=%s: no host midi device matches, keeping the midi mapper\n", cfg);
+    *err = MIDIERR_NODEVICE;
+    ERR("midiconfig=%s: no host midi device matches this name\n", cfg);
     return dev_id;
 }
 
@@ -815,16 +825,22 @@ UINT16 WINAPI midiOutOpen16(HMIDIOUT16* lphMidiOut, UINT16 uDeviceID,
                             DWORD dwCallback, DWORD dwInstance, DWORD dwFlags)
 {
     HMIDIOUT	                hmo;
-    UINT	                ret;
+    UINT	                ret, map_err, host_id;
     struct mmsystdrv_thunk*     thunk;
     DWORD dwFlags32 = (dwFlags & ~CALLBACK_TYPEMASK) | CALLBACK_FUNCTION;
 
+
+    /* resolve the host device before anything is allocated: a bad midiconfig= must
+     * fail the open, and must not leave a thunk behind
+     */
+    host_id = midi_map_host_device((INT16)uDeviceID, &map_err);
+    if (map_err != MMSYSERR_NOERROR) return map_err;
 
     if (!(thunk = MMSYSTDRV_AddThunk(dwCallback, dwFlags, MMSYSTDRV_MIDIOUT)))
     {
         return MMSYSERR_NOMEM;
     }
-    ret = midiOutOpen(&hmo, midi_map_host_device((INT16)uDeviceID), (DWORD)thunk, dwInstance, dwFlags32);
+    ret = midiOutOpen(&hmo, host_id, (DWORD)thunk, dwInstance, dwFlags32);
     if (ret == MMSYSERR_NOERROR)
     {
         if (lphMidiOut != NULL) *lphMidiOut = HMIDIOUT_16(hmo);
@@ -1179,14 +1195,15 @@ MMRESULT16 WINAPI midiStreamOpen16(HMIDISTRM16* phMidiStrm, LPUINT16 devid,
 {
     HMIDISTRM	                hMidiStrm32;
     MMRESULT 	                ret;
-    UINT	                devid32;
+    UINT	                devid32, map_err;
     struct mmsystdrv_thunk*     thunk;
 
     if (!phMidiStrm || !devid)
 	return MMSYSERR_INVALPARAM;
     /* the app's device id is a WORD; the midi mapper is -1, so it must be sign extended
      * (a zero extended 0xFFFF is rejected by winmm as a bad device id) */
-    devid32 = midi_map_host_device((INT16)*devid);
+    devid32 = midi_map_host_device((INT16)*devid, &map_err);
+    if (map_err != MMSYSERR_NOERROR) return map_err;
 
     if (!(thunk = MMSYSTDRV_AddThunk(dwCallback, fdwOpen, MMSYSTDRV_MIDIOUT)))
     {
