@@ -7,7 +7,7 @@
 
 - **上游基线**：`otya128/winevdm` 的 `master` @ `b88d7f87`（2026-11 同步：包含上游 5 个提交 / 2 个 PR 合并，已合进 `nohafix`；上一个基线是 `a31d1c2`）
 - **我们的工作分支**：`nohafix` = 上游基线 **+ 12 个合流补丁**（并修好其中 3 条自身的缺陷）**+ MIDI 修复两处**（映射器设备号符号扩展与 `[otvdm] midiconfig=`、`midiStreamOut16` 的表头大小）**+ 16 位 MIDI 的兜底发声通路（内置 MCI 序列器）+ `-O1` 构建守卫**
-- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）及其上一版 `patched-o1-midip1-20261016`——两版的可复现性说明见 §三.4。
+- **预编译包**：本仓库 **Releases** 页的 `patched-o1-midip2-20261016`（MinGW-W64 i686、`-O1` Release、已去掉符号表与构建机路径、平铺布局、解压即用，**不含 DOS 载荷**）及其上一版 `patched-o1-midip1-20261016`。
 - **DOS 支持**：单独的扩展包 **`ext-dos-20261105`**（`otvdm-ext-dos-20261105.zip`，**3,058,623 B**，932 条目，**zip 无顶层目录**，解压直接铺在 otvdm 部署目录根）：双击 `install-dos.cmd`；安装时按系统位数**直接指向** `msdos\x64\msdos.exe` 或 `msdos\x86\msdos.exe`。
 - `master` 保持为**上游纯镜像**；我们的东西都在 `nohafix` 上。
 
